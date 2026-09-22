@@ -1,0 +1,109 @@
+// 6FIGS models per PRD §8 (Modules 2–5).
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id         String            @id @default(cuid())
+  handle     String?           @unique
+  visMode    String            @default("HIDDEN")
+  tags       String[]          @default([])
+  isBot      Boolean           @default(false)
+  createdAt  DateTime          @default(now())
+  wallets    Wallet[]
+  eligibility EligibilityCache?
+  sentMessages Message[]       @relation("SentMessages")
+  roomMemberships RoomMember[]
+  createdRooms Room[]          @relation("CreatedRooms")
+}
+
+model Wallet {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chain       String
+  addressHash String    @unique
+  addressEnc  String?
+  mockUsd     Int?
+  verifiedAt  DateTime?
+
+  @@index([userId])
+}
+
+model EligibilityCache {
+  userId     String   @id
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tier       String
+  assetPct   Json?
+  verifiedAt DateTime @default(now())
+  expiresAt  DateTime
+}
+
+model Room {
+  id             String       @id @default(cuid())
+  name           String
+  imageUrl       String?
+  accessType     String       // "tier" | "invite"
+  minTier        String?
+  inviteCodeHash String?
+  createdBy      String
+  creator        User         @relation("CreatedRooms", fields: [createdBy], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+  members        RoomMember[]
+}
+
+model RoomMember {
+  roomId   String
+  room     Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt DateTime @default(now())
+
+  @@id([roomId, userId])
+}
+
+model Match {
+  id        String   @id @default(cuid())
+  aUserId   String
+  bUserId   String
+  status    String   @default("open")
+  createdAt DateTime @default(now())
+  games     Game[]
+
+  @@index([aUserId])
+  @@index([bUserId])
+}
+
+model Game {
+  id        String   @id @default(cuid())
+  matchId   String
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  board     String   @default(".........")
+  turn      String   @default("X")
+  status    String   @default("open")
+  winner    String?
+  updatedAt DateTime @updatedAt
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  scope     String   // "dm" | "room"
+  scopeId   String
+  senderId  String
+  sender    User     @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([scope, scopeId, createdAt])
+}
+
+model TokenCardCache {
+  symbol    String   @id
+  payload   Json
+  fetchedAt DateTime @default(now())
+}
