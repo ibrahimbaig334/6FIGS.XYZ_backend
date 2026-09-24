@@ -10,6 +10,7 @@ export class RoomsController {
 
   @Get()
   list(
+    @CurrentUser() userId: string,
     @Query("q") q?: string,
     @Query("access") access?: string,
     @Query("sort") sort?: string,
@@ -17,7 +18,7 @@ export class RoomsController {
     @Query("page") page?: string,
     @Query("limit") limit?: string,
   ) {
-    return this.rooms.list({
+    return this.rooms.list(userId, {
       q,
       access,
       sort,
@@ -35,6 +36,11 @@ export class RoomsController {
   @Post(":id/join")
   join(@CurrentUser() userId: string, @Param("id") id: string, @Body() body: { code?: unknown }) {
     return this.rooms.join(userId, id, body.code);
+  }
+
+  @Get(":id/meta")
+  meta(@CurrentUser() userId: string, @Param("id") id: string) {
+    return this.rooms.meta(userId, id);
   }
 
   @Get(":id/members")

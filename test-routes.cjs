@@ -219,6 +219,14 @@ function sock(token) {
   const list = await req("GET", "/rooms?limit=50", { token: tokenA });
   check("room list paginated shape", Array.isArray(list.data.items) && typeof list.data.total === "number", JSON.stringify(list.data).slice(0, 120));
   check("room list leaks no code", JSON.stringify(list.data).toUpperCase().indexOf("PAIR99") === -1, "");
+  check("room list has isMember", list.data.items.every((x) => typeof x.isMember === "boolean"), "");
+  const ownT3 = list.data.items.find((x) => x.id === t3.data.id);
+  check("creator isMember true", ownT3?.isMember === true, JSON.stringify(ownT3));
+  r = await req("GET", "/rooms/cm00000000000000000000000/meta", { token: B.token });
+  check("meta missing room 404", r.status === 404, r.status);
+  r = await req("GET", `/rooms/${t3.data.id}/meta`, { token: B.token });
+  check("meta non-member", r.status === 200 && r.data.isMember === false && r.data.name === "Whale Den", JSON.stringify(r.data));
+  check("meta no code leak", !("inviteCode" in r.data) && !("inviteCodeHash" in r.data), "");
   r = await req("GET", "/rooms?limit=1&page=1", { token: tokenA });
   check("rooms limit=1", r.data.items.length === 1 && r.data.limit === 1 && r.data.page === 1, JSON.stringify(r.data));
   r = await req("GET", "/rooms?limit=200", { token: tokenA });
@@ -236,6 +244,15 @@ function sock(token) {
   check("invite code case-insensitive 2xx", ok2xx(r.status), r.status);
   r = await req("POST", `/rooms/${inv.data.id}/join`, { token: D.token, body: { code: "PAIR99" } });
   check("full 1v1 room 403", r.status === 403, r.status);
+  r = await req("POST", `/rooms/${inv.data.id}/join`, { token: tokenA, body: { code: "TOTALLY-WRONG" } });
+  check("member rejoin idempotent (already inside, no re-prompt)", ok2xx(r.status), r.status);
+  const listB = await req("GET", "/rooms?limit=50", { token: B.token });
+  const bT3 = listB.data.items.find((x) => x.id === t3.data.id);
+  check("list isMember false for non-member", !!bT3 && bT3.isMember === false, JSON.stringify(bT3));
+  const bInv = listB.data.items.find((x) => x.id === inv.data.id);
+  check("list isMember true after join", !!bInv && bInv.isMember === true, JSON.stringify(bInv));
+  r = await req("GET", `/rooms/${inv.data.id}/meta`, { token: B.token });
+  check("meta member after join", r.status === 200 && r.data.isMember === true, JSON.stringify(r.data));
   r = await req("POST", "/rooms/cm00000000000000000000000/join", { token: B.token, body: {} });
   check("join missing room 404", r.status === 404, r.status);
   r = await req("GET", `/rooms/${t3.data.id}/members`, { token: B.token });
@@ -264,8 +281,8 @@ function sock(token) {
   check("token lowercase ok", r.status === 200 && (r.data.card.status === "live" || r.data.card.status === "stale"), JSON.stringify(r.data));
   check("token has no holders field", !("holders" in r.data.card), JSON.stringify(r.data.card));
 
-  const lounge = list.data.items.find((x) => x.name.includes("LOUNGE")) ?? list.data.items[0];
-  const bad = await emit(sA, "sendMessage", { scope: "room", scopeId: lounge.id, body: "hi" });
+  // B is provably not a member of Whale Den (members check above 403s)
+  const bad = await emit(sB, "sendMessage", { scope: "room", scopeId: t3.data.id, body: "hi" });
   check("WS send non-member room rejected", !!bad.error, JSON.stringify(bad));
   const badDm = await emit(sB, "sendMessage", { scope: "dm", scopeId: "cm00000000000000000000000", body: "hi" });
   check("WS send to someone else's dm rejected", !!badDm.error, JSON.stringify(badDm));

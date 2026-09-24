@@ -47,6 +47,21 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
     await this.redis.del(key);
   }
 
+  /** SET NX lock — waits up to waitMs for acquisition. Returns false if timed out. */
+  async lock(key: string, ttlMs: number, waitMs = 2000): Promise<boolean> {
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      const ok = await this.redis.set(key, "1", "PX", ttlMs, "NX");
+      if (ok === "OK") return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
+  async unlock(key: string): Promise<void> {
+    await this.redis.del(key);
+  }
+
   async delPrefix(prefix: string): Promise<void> {
     let cursor = "0";
     do {

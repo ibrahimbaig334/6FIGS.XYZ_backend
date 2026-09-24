@@ -26,20 +26,23 @@ export class RoomsService {
 
   /**
    * Room directory with search, filters, sorting and pagination.
-   * sort: created | name | members. Cached 15s per parameter combo in Redis.
+   * sort: created | name | members. Cached 15s per user+param combo in Redis
+   * (userId is part of the key because items include per-user isMember).
    */
-  async list(query: { q?: string; access?: string; sort?: string; order?: string; page?: number; limit?: number }) {
+  async list(userId: string, query: { q?: string; access?: string; sort?: string; order?: string; page?: number; limit?: number }) {
     const q = (query.q ?? "").trim().toLowerCase();
     const access = query.access === "tier" || query.access === "invite" ? query.access : undefined;
     const sort = query.sort === "name" || query.sort === "members" ? query.sort : "created";
     const order = query.order === "asc" ? 1 : -1;
     const limit = Math.min(Math.max(query.limit ?? 20, 1), 50);
     const page = Math.max(query.page ?? 1, 1);
-    const cacheKey = `rooms:list:${JSON.stringify({ q, access, sort, order, page, limit })}`;
+    const cacheKey = `rooms:list:${userId}:${JSON.stringify({ q, access, sort, order, page, limit })}`;
     const hit = await this.cache.get<unknown>(cacheKey);
     if (hit) return hit;
 
     let rooms = await this.prisma.room.findMany({ include: { _count: { select: { members: true } } } });
+    const mine = await this.prisma.roomMember.findMany({ where: { userId }, select: { roomId: true } });
+    const mySet = new Set(mine.map((m) => m.roomId));
     if (access) rooms = rooms.filter((r) => r.accessType === access);
     if (q) rooms = rooms.filter((r) => r.name.toLowerCase().includes(q));
     const by: Record<string, (r: (typeof rooms)[number]) => string | number> = {
@@ -64,6 +67,7 @@ export class RoomsService {
       minTier: r.minTier,
       memberCount: r._count.members,
       createdAt: r.createdAt,
+      isMember: mySet.has(r.id),
     }));
     const out = { items, total, page, limit };
     await this.cache.set(cacheKey, out, 15_000);
@@ -131,23 +135,52 @@ export class RoomsService {
   /**
    * The room's 1v1 game: returns the pair's open game, creating a match+game
    * when needed. Requires both seats filled (member-only, needs a peer).
+   * Guarded by a Redis lock — concurrent calls from both players used to race
+   * and create two different games (boards wouldn't sync).
    */
   async game(userId: string, roomId: string) {
     await this.assertMember(userId, roomId);
-    const members = await this.prisma.roomMember.findMany({ where: { roomId }, orderBy: { joinedAt: "asc" } });
-    if (members.length < 2) throw new BadRequestException("Waiting for your 1v1 peer to join");
-    const [u1, u2] = [members[0].userId, members[1].userId];
-    const existing = await this.prisma.match.findFirst({
-      where: { OR: [{ aUserId: u1, bUserId: u2 }, { aUserId: u2, bUserId: u1 }] },
-      orderBy: { createdAt: "desc" },
-      include: { games: { orderBy: { updatedAt: "desc" }, take: 1 } },
-    });
-    if (existing && existing.games[0] && existing.games[0].status === "open") {
-      return { gameId: existing.games[0].id, matchId: existing.id };
+    const lockKey = `lock:room-game:${roomId}`;
+    const locked = await this.cache.lock(lockKey, 5000, 2000);
+    try {
+      const members = await this.prisma.roomMember.findMany({ where: { roomId }, orderBy: { joinedAt: "asc" } });
+      if (members.length < 2) throw new BadRequestException("Waiting for your 1v1 peer to join");
+      const [u1, u2] = [members[0].userId, members[1].userId];
+      const existing = await this.prisma.match.findFirst({
+        where: { OR: [{ aUserId: u1, bUserId: u2 }, { aUserId: u2, bUserId: u1 }] },
+        orderBy: { createdAt: "desc" },
+        include: { games: { orderBy: { updatedAt: "desc" }, take: 1 } },
+      });
+      if (existing && existing.games[0] && existing.games[0].status === "open") {
+        return { gameId: existing.games[0].id, matchId: existing.id };
+      }
+      const match = await this.prisma.match.create({ data: { aUserId: u1, bUserId: u2 } });
+      const game = await this.prisma.game.create({ data: { matchId: match.id } });
+      return { gameId: game.id, matchId: match.id };
+    } finally {
+      if (locked) await this.cache.unlock(lockKey);
     }
-    const match = await this.prisma.match.create({ data: { aUserId: u1, bUserId: u2 } });
-    const game = await this.prisma.game.create({ data: { matchId: match.id } });
-    return { gameId: game.id, matchId: match.id };
+  }
+
+  /**
+   * Lightweight room header for the join gate (name, access rules, membership).
+   * Never exposes inviteCodeHash — only isMember tells the client whether to
+   * ask for a code at all.
+   */
+  async meta(userId: string, roomId: string) {
+    const room = await this.prisma.room.findUnique({ where: { id: roomId } });
+    if (!room) throw new NotFoundException("Room not found");
+    const member = await this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } });
+    const memberCount = await this.prisma.roomMember.count({ where: { roomId } });
+    return {
+      id: room.id,
+      name: room.name,
+      imageUrl: room.imageUrl,
+      accessType: room.accessType,
+      minTier: room.minTier,
+      memberCount,
+      isMember: !!member,
+    };
   }
 
   async assertMember(userId: string, roomId: string): Promise<void> {
