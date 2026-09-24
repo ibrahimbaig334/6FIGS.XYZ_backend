@@ -1,48 +1,33 @@
-import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import Redis from "ioredis";
 
-interface Entry {
-  exp: number;
-  value: unknown;
-}
-
 /**
- * Hot-GET cache. Uses Redis when REDIS_URL is set, otherwise an in-memory
- * TTL map (single instance). All methods are async; callers must await.
+ * Redis-only hot-GET cache. The backend refuses to boot without Redis
+ * (REDIS_URL): if the connection fails at startup, init throws and Nest dies.
  */
 @Injectable()
-export class CacheService implements OnModuleDestroy {
+export class CacheService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger("CacheService");
-  private readonly mem = new Map<string, Entry>();
-  private redis: Redis | null = null;
-  private redisOk = false;
+  private redis!: Redis;
 
-  constructor() {
+  async onModuleInit(): Promise<void> {
     const url = process.env.REDIS_URL;
-    if (!url) return;
+    if (!url) throw new Error("REDIS_URL is not set — backend requires Redis to start");
+    const client = new Redis(url, {
+      lazyConnect: true,
+      maxRetriesPerRequest: 2,
+      connectTimeout: 5000,
+      retryStrategy: () => null, // fail fast at boot; runtime blips surface as errors
+    });
     try {
-      const client = new Redis(url, {
-        lazyConnect: true,
-        maxRetriesPerRequest: 1,
-        retryStrategy: () => null, // fail fast — memory fallback covers us
-      });
-      client.on("error", () => {
-        if (this.redisOk) this.log.warn("Redis error — falling back to memory cache");
-        this.redisOk = false;
-      });
-      client
-        .connect()
-        .then(() => {
-          this.redisOk = true;
-          this.log.log("Redis cache connected");
-        })
-        .catch(() => {
-          this.log.warn("Redis unreachable — using memory cache");
-        });
-      this.redis = client;
-    } catch {
-      this.redis = null;
+      await client.connect();
+      await client.ping();
+    } catch (err) {
+      client.disconnect();
+      throw new Error(`Redis unreachable — backend requires Redis to start: ${err instanceof Error ? err.message : err}`);
     }
+    this.redis = client;
+    this.log.log("Redis cache connected");
   }
 
   onModuleDestroy() {
@@ -50,42 +35,24 @@ export class CacheService implements OnModuleDestroy {
   }
 
   async get<T>(key: string): Promise<T | undefined> {
-    if (this.redis && this.redisOk) {
-      try {
-        const raw = await this.redis.get(key);
-        if (raw) return JSON.parse(raw) as T;
-      } catch {
-        this.redisOk = false;
-      }
-    }
-    const e = this.mem.get(key);
-    if (!e) return undefined;
-    if (e.exp < Date.now()) {
-      this.mem.delete(key);
-      return undefined;
-    }
-    return e.value as T;
+    const raw = await this.redis.get(key);
+    return raw ? (JSON.parse(raw) as T) : undefined;
   }
 
   async set(key: string, value: unknown, ttlMs: number): Promise<void> {
-    this.mem.set(key, { exp: Date.now() + ttlMs, value });
-    if (this.redis && this.redisOk) {
-      try {
-        await this.redis.set(key, JSON.stringify(value), "PX", ttlMs);
-      } catch {
-        this.redisOk = false;
-      }
-    }
+    await this.redis.set(key, JSON.stringify(value), "PX", ttlMs);
   }
 
   async del(key: string): Promise<void> {
-    this.mem.delete(key);
-    if (this.redis && this.redisOk) {
-      try {
-        await this.redis.del(key);
-      } catch {
-        this.redisOk = false;
-      }
-    }
+    await this.redis.del(key);
+  }
+
+  async delPrefix(prefix: string): Promise<void> {
+    let cursor = "0";
+    do {
+      const [next, keys] = await this.redis.scan(cursor, "MATCH", `${prefix}*`, "COUNT", 200);
+      cursor = next;
+      if (keys.length) await this.redis.del(...keys);
+    } while (cursor !== "0");
   }
 }

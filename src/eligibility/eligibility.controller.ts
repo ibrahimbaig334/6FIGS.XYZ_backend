@@ -8,8 +8,8 @@ import { EligibilityService } from "./eligibility.service";
 export class EligibilityController {
   constructor(private readonly eligibility: EligibilityService) {}
 
-  @Get("me")
-  me(@CurrentUser() userId: string) {
+  @Get("user")
+  user(@CurrentUser() userId: string) {
     return this.eligibility.me(userId);
   }
 

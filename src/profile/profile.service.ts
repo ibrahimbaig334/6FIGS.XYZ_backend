@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { EligibilityService } from "../eligibility/eligibility.service";
 import { VIS_MODES, shortAddr } from "../common/tiers";
@@ -48,7 +49,14 @@ export class ProfileService {
       }
       data.visMode = String(body.visMode);
     }
-    const user = await this.prisma.user.update({ where: { id: userId }, data });
-    return { id: user.id, handle: user.handle, visMode: user.visMode };
+    try {
+      const user = await this.prisma.user.update({ where: { id: userId }, data });
+      return { id: user.id, handle: user.handle, visMode: user.visMode };
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+        throw new ConflictException("Handle already taken");
+      }
+      throw e;
+    }
   }
 }

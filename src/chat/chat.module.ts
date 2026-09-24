@@ -4,11 +4,11 @@ import { RoomsModule } from "../rooms/rooms.module";
 import { ChatController } from "./chat.controller";
 import { ChatGateway } from "./chat.gateway";
 import { ChatService } from "./chat.service";
-import { TokensService } from "./tokens.service";
+import { TokensModule } from "./tokens.module";
 
 @Module({
-  imports: [AuthModule, RoomsModule],
+  imports: [AuthModule, RoomsModule, TokensModule],
   controllers: [ChatController],
-  providers: [ChatService, ChatGateway, TokensService],
+  providers: [ChatService, ChatGateway],
 })
 export class ChatModule {}

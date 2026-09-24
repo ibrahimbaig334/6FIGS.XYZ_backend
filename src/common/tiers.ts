@@ -1,16 +1,31 @@
-// Tier constants shared across modules (mirrors PRD §3).
+// Tier thresholds are environment-aware (PRD §3):
+// prod = I > $100K · II > $500K · III > $1M; devnet uses very low tiers
+// because Sepolia-ETH / devnet-SOL faucet amounts are tiny.
 export type Tier = "TIER I" | "TIER II" | "TIER III";
 
-export const TIER_MIN: Record<Tier, number> = {
-  "TIER I": 100_000,
-  "TIER II": 500_000,
-  "TIER III": 1_000_000,
-};
+export function isDevnet(): boolean {
+  return (process.env.CHAIN_MODE ?? "devnet") === "devnet";
+}
+
+export function tierThresholds(): Record<Tier, number> {
+  if (isDevnet()) return { "TIER I": 10, "TIER II": 100, "TIER III": 1_000 };
+  return { "TIER I": 100_000, "TIER II": 500_000, "TIER III": 1_000_000 };
+}
+
+export function tierList(): { name: Tier; min: number }[] {
+  const t = tierThresholds();
+  return [
+    { name: "TIER I", min: t["TIER I"] },
+    { name: "TIER II", min: t["TIER II"] },
+    { name: "TIER III", min: t["TIER III"] },
+  ];
+}
 
 export function tierOf(v: number): Tier | null {
-  if (v >= 1_000_000) return "TIER III";
-  if (v >= 500_000) return "TIER II";
-  if (v >= 100_000) return "TIER I";
+  const t = tierThresholds();
+  if (v >= t["TIER III"]) return "TIER III";
+  if (v >= t["TIER II"]) return "TIER II";
+  if (v >= t["TIER I"]) return "TIER I";
   return null;
 }
 

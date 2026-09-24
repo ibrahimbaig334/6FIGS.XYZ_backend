@@ -8,12 +8,12 @@ import { ProfileService } from "./profile.service";
 export class ProfileController {
   constructor(private readonly profile: ProfileService) {}
 
-  @Get("me")
-  me(@CurrentUser() userId: string) {
+  @Get("user")
+  user(@CurrentUser() userId: string) {
     return this.profile.me(userId);
   }
 
-  @Patch("me")
+  @Patch("user")
   update(@CurrentUser() userId: string, @Body() body: { handle?: unknown; visMode?: unknown }) {
     return this.profile.update(userId, body);
   }

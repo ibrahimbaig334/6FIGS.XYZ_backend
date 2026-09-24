@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { CurrentUser } from "../auth/current-user";
 import { JwtGuard } from "../auth/jwt.guard";
 import { RoomsService } from "./rooms.service";
@@ -9,8 +9,22 @@ export class RoomsController {
   constructor(private readonly rooms: RoomsService) {}
 
   @Get()
-  list() {
-    return this.rooms.list();
+  list(
+    @Query("q") q?: string,
+    @Query("access") access?: string,
+    @Query("sort") sort?: string,
+    @Query("order") order?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.rooms.list({
+      q,
+      access,
+      sort,
+      order,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
   }
 
   @Post()
@@ -26,5 +40,10 @@ export class RoomsController {
   @Get(":id/members")
   members(@CurrentUser() userId: string, @Param("id") id: string) {
     return this.rooms.members(userId, id);
+  }
+
+  @Get(":id/game")
+  game(@CurrentUser() userId: string, @Param("id") id: string) {
+    return this.rooms.game(userId, id);
   }
 }

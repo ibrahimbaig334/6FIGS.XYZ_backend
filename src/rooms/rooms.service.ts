@@ -10,6 +10,9 @@ export function inviteHash(code: string): string {
   return createHash("sha256").update(code.trim().toUpperCase()).digest("hex");
 }
 
+/** 1v1-only: every private room holds at most two members. */
+export const ROOM_CAPACITY = 2;
+
 const VALID_TIERS = ["TIER I", "TIER II", "TIER III"];
 
 @Injectable()
@@ -21,11 +24,39 @@ export class RoomsService {
     private readonly cache: CacheService,
   ) {}
 
-  async list() {
-    const hit = await this.cache.get<unknown[]>("rooms:list");
+  /**
+   * Room directory with search, filters, sorting and pagination.
+   * sort: created | name | members. Cached 15s per parameter combo in Redis.
+   */
+  async list(query: { q?: string; access?: string; sort?: string; order?: string; page?: number; limit?: number }) {
+    const q = (query.q ?? "").trim().toLowerCase();
+    const access = query.access === "tier" || query.access === "invite" ? query.access : undefined;
+    const sort = query.sort === "name" || query.sort === "members" ? query.sort : "created";
+    const order = query.order === "asc" ? 1 : -1;
+    const limit = Math.min(Math.max(query.limit ?? 20, 1), 50);
+    const page = Math.max(query.page ?? 1, 1);
+    const cacheKey = `rooms:list:${JSON.stringify({ q, access, sort, order, page, limit })}`;
+    const hit = await this.cache.get<unknown>(cacheKey);
     if (hit) return hit;
-    const rooms = await this.prisma.room.findMany({ include: { _count: { select: { members: true } } }, orderBy: { createdAt: "asc" } });
-    const out = rooms.map((r) => ({
+
+    let rooms = await this.prisma.room.findMany({ include: { _count: { select: { members: true } } } });
+    if (access) rooms = rooms.filter((r) => r.accessType === access);
+    if (q) rooms = rooms.filter((r) => r.name.toLowerCase().includes(q));
+    const by: Record<string, (r: (typeof rooms)[number]) => string | number> = {
+      created: (r) => r.createdAt.getTime(),
+      name: (r) => r.name.toLowerCase(),
+      members: (r) => r._count.members,
+    };
+    const key = by[sort];
+    rooms.sort((a, b) => {
+      const va = key(a);
+      const vb = key(b);
+      if (va < vb) return -1 * order;
+      if (va > vb) return 1 * order;
+      return 0;
+    });
+    const total = rooms.length;
+    const items = rooms.slice((page - 1) * limit, page * limit).map((r) => ({
       id: r.id,
       name: r.name,
       imageUrl: r.imageUrl,
@@ -34,7 +65,8 @@ export class RoomsService {
       memberCount: r._count.members,
       createdAt: r.createdAt,
     }));
-    await this.cache.set("rooms:list", out, 15_000);
+    const out = { items, total, page, limit };
+    await this.cache.set(cacheKey, out, 15_000);
     return out;
   }
 
@@ -57,8 +89,11 @@ export class RoomsService {
       data: { name, imageUrl: body.imageUrl ? String(body.imageUrl).slice(0, 512) : null, accessType, minTier, inviteCodeHash: codeHash, createdBy: userId },
     });
     await this.prisma.roomMember.create({ data: { roomId: room.id, userId } });
-    await this.cache.del("rooms:list");
-    return { id: room.id, name: room.name, accessType: room.accessType, minTier: room.minTier };
+    await this.cache.delPrefix("rooms:list:");
+    // The plaintext code is returned exactly once (creation) so the creator
+    // can share an invite link. It is never readable again afterwards.
+    const inviteCode = accessType === "invite" ? String(body.inviteCode).trim().toUpperCase() : null;
+    return { id: room.id, name: room.name, accessType: room.accessType, minTier: room.minTier, inviteCode };
   }
 
   async join(userId: string, roomId: string, code?: unknown) {
@@ -66,6 +101,8 @@ export class RoomsService {
     if (!room) throw new NotFoundException("Room not found");
     const existing = await this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } });
     if (existing) return { ok: true, roomId };
+    const count = await this.prisma.roomMember.count({ where: { roomId } });
+    if (count >= ROOM_CAPACITY) throw new ForbiddenException("Room is full — private rooms are 1v1");
     const elig = await this.eligibility.me(userId);
     if (!elig.tier) throw new ForbiddenException("Verify ≥ $100K in Profile first");
     if (room.accessType === "tier") {
@@ -76,7 +113,7 @@ export class RoomsService {
       if (inviteHash(String(code ?? "")) !== room.inviteCodeHash) throw new ForbiddenException("Wrong invite code");
     }
     await this.prisma.roomMember.create({ data: { roomId, userId } });
-    await this.cache.del("rooms:list");
+    await this.cache.delPrefix("rooms:list:");
     return { ok: true, roomId };
   }
 
@@ -87,9 +124,30 @@ export class RoomsService {
     return rows.map((m) => ({
       id: m.user.id,
       handle: m.user.handle ?? `user_${m.user.id.slice(-4)}`,
-      isBot: m.user.isBot,
-      ...this.presence.status(m.user.id, m.user.isBot),
+      ...this.presence.status(m.user.id),
     }));
+  }
+
+  /**
+   * The room's 1v1 game: returns the pair's open game, creating a match+game
+   * when needed. Requires both seats filled (member-only, needs a peer).
+   */
+  async game(userId: string, roomId: string) {
+    await this.assertMember(userId, roomId);
+    const members = await this.prisma.roomMember.findMany({ where: { roomId }, orderBy: { joinedAt: "asc" } });
+    if (members.length < 2) throw new BadRequestException("Waiting for your 1v1 peer to join");
+    const [u1, u2] = [members[0].userId, members[1].userId];
+    const existing = await this.prisma.match.findFirst({
+      where: { OR: [{ aUserId: u1, bUserId: u2 }, { aUserId: u2, bUserId: u1 }] },
+      orderBy: { createdAt: "desc" },
+      include: { games: { orderBy: { updatedAt: "desc" }, take: 1 } },
+    });
+    if (existing && existing.games[0] && existing.games[0].status === "open") {
+      return { gameId: existing.games[0].id, matchId: existing.id };
+    }
+    const match = await this.prisma.match.create({ data: { aUserId: u1, bUserId: u2 } });
+    const game = await this.prisma.game.create({ data: { matchId: match.id } });
+    return { gameId: game.id, matchId: match.id };
   }
 
   async assertMember(userId: string, roomId: string): Promise<void> {

@@ -32,9 +32,9 @@ export class WalletController {
     return this.auth.linkWallet(userId, String(body.chain ?? ""), String(body.address ?? ""));
   }
 
-  @Get("me")
+  @Get("user")
   @UseGuards(JwtGuard)
-  me(@CurrentUser() userId: string) {
+  user(@CurrentUser() userId: string) {
     return this.wallets.listMine(userId);
   }
 

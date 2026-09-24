@@ -34,7 +34,7 @@ export class GameService {
     const opp = await this.prisma.user.findUnique({ where: { id: this.shape(game, userId).oppId } });
     return {
       ...this.shape(game, userId),
-      opponent: opp ? { id: opp.id, handle: opp.handle ?? `user_${opp.id.slice(-4)}`, visMode: opp.visMode, isBot: opp.isBot } : null,
+      opponent: opp ? { id: opp.id, handle: opp.handle ?? `user_${opp.id.slice(-4)}`, visMode: opp.visMode } : null,
     };
   }
 

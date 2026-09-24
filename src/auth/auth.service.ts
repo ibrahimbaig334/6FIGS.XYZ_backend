@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, UnauthorizedException } from "@nestjs/
 import { createHash, randomBytes } from "crypto";
 import { ethers } from "ethers";
 import bs58 from "bs58";
+import btcMessage from "bitcoinjs-message";
 import { verifyAsync } from "@noble/ed25519";
 import jwt from "jsonwebtoken";
 import { PrismaService } from "../prisma/prisma.service";
@@ -38,6 +39,9 @@ export function normalizeAddress(chain: string, address: string): string {
   }
   if (chain === "BTC") {
     if (!/^[A-Za-z0-9]{26,62}$/.test(a)) throw new BadRequestException("Invalid BTC address");
+    if (a.toLowerCase().startsWith("bc1p")) {
+      throw new BadRequestException("Taproot addresses cannot sign messages — use native segwit (bc1q)");
+    }
     return a;
   }
   throw new BadRequestException("Unsupported chain");
@@ -78,28 +82,43 @@ export class AuthService {
   }
 
   private async verifySignature(chain: string, normalized: string, nonce: string, signature: string): Promise<void> {
-    if (isDevnet() && signature === "mock") return; // devnet mock wallets (no extension)
     if (chain === "EVM") {
-      const recovered = ethers.verifyMessage(loginMessage(chain, normalized, nonce), signature);
+      let recovered: string;
+      try {
+        recovered = ethers.verifyMessage(loginMessage(chain, normalized, nonce), signature);
+      } catch {
+        throw new UnauthorizedException("Malformed EVM signature");
+      }
       if (recovered.toLowerCase() !== normalized.toLowerCase()) throw new UnauthorizedException("Bad EVM signature");
       return;
     }
     if (chain === "SOL") {
-      let sigBytes: Uint8Array;
+      let ok = false;
       try {
-        sigBytes = bs58.decode(signature);
+        ok = await verifyAsync(
+          bs58.decode(signature),
+          new TextEncoder().encode(loginMessage(chain, normalized, nonce)),
+          bs58.decode(normalized),
+        );
       } catch {
-        throw new UnauthorizedException("Bad Solana signature encoding");
+        ok = false;
       }
-      const ok = await verifyAsync(
-        sigBytes,
-        new TextEncoder().encode(loginMessage(chain, normalized, nonce)),
-        bs58.decode(normalized),
-      );
       if (!ok) throw new UnauthorizedException("Bad Solana signature");
       return;
     }
-    throw new BadRequestException("BTC wallets are link-only (no signature flow)");
+    if (chain === "BTC") {
+      // Unisat/Xverse message signatures (base64). Taproot (bc1p) message
+      // signing is not standardized — those addresses are rejected at connect.
+      let ok = false;
+      try {
+        ok = btcMessage.verify(loginMessage(chain, normalized, nonce), normalized, signature);
+      } catch {
+        ok = false;
+      }
+      if (!ok) throw new UnauthorizedException("Bad BTC signature");
+      return;
+    }
+    throw new BadRequestException("Unsupported chain");
   }
 
   async verifyAndLogin(chain: string, address: string, nonce: string, signature: string) {
@@ -112,11 +131,14 @@ export class AuthService {
     return { token: this.issueToken(user.id), user: this.publicUser(user) };
   }
 
-  /** BTC link-only + devnet mock link. Attaches to userId when known, else creates a user. */
+  /**
+   * Address-link flow. In prod every chain must use the signed verify flow;
+   * in devnet plain linking stays open as a test hook (no mock UI anymore).
+   */
   async linkWallet(userId: string | null, chain: string, address: string) {
     if (!CHAINS.includes(chain as Chain)) throw new BadRequestException("Unsupported chain");
-    if (chain !== "BTC" && !isDevnet()) {
-      throw new BadRequestException("EVM/SOL wallets must connect via signed verify flow");
+    if (!isDevnet()) {
+      throw new BadRequestException("Wallets must connect via the signed verify flow");
     }
     const normalized = normalizeAddress(chain, address);
     const wallet = await this.findOrCreateWallet(userId, chain, normalized);

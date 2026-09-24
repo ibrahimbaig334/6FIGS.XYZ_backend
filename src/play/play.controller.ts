@@ -1,29 +1,34 @@
-import { Controller, Get, Post, Query, Req, UseGuards } from "@nestjs/common";
-import { AuthService } from "../auth/auth.service";
+import { BadRequestException, Body, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
 import { CurrentUser } from "../auth/current-user";
-import { JwtGuard, AuthedRequest } from "../auth/jwt.guard";
+import { JwtGuard } from "../auth/jwt.guard";
 import { PlayService } from "./play.service";
 
 @Controller("play")
 export class PlayController {
-  constructor(
-    private readonly play: PlayService,
-    private readonly auth: AuthService,
-  ) {}
+  constructor(private readonly play: PlayService) {}
 
   @Get("online")
+  @UseGuards(JwtGuard)
   online(
-    @Req() req: AuthedRequest,
+    @CurrentUser() userId: string,
     @Query("filter") filter?: string,
     @Query("q") q?: string,
   ) {
-    const selfId = this.auth.userIdFromHeader(req.headers.authorization);
-    return this.play.online(selfId, filter || undefined, q);
+    return this.play.online(userId, filter || undefined, q);
   }
 
   @Post("queue")
   @UseGuards(JwtGuard)
   queue(@CurrentUser() userId: string) {
     return this.play.queue(userId);
+  }
+
+  @Post("challenge")
+  @UseGuards(JwtGuard)
+  challenge(@CurrentUser() userId: string, @Body() body: { userId?: unknown }) {
+    if (typeof body.userId !== "string" || !body.userId) {
+      throw new BadRequestException("userId required");
+    }
+    return this.play.challenge(userId, body.userId);
   }
 }

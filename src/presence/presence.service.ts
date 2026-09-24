@@ -38,8 +38,7 @@ export class PresenceService {
     this.lastSeen.set(userId, Date.now());
   }
 
-  status(userId: string, isBot = false): Presence {
-    if (isBot) return { online: true, lastSeenAt: new Date().toISOString() };
+  status(userId: string): Presence {
     const ts = this.lastSeen.get(userId);
     return { online: this.users.has(userId), lastSeenAt: ts ? new Date(ts).toISOString() : null };
   }

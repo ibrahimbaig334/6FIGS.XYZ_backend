@@ -1,13 +1,14 @@
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
+import { TokensModule } from "../chat/tokens.module";
 import { EligibilityController } from "./eligibility.controller";
 import { EligibilityService } from "./eligibility.service";
-import { MockTierService } from "./tiers.service";
+import { BalancesService } from "./balances.service";
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, TokensModule],
   controllers: [EligibilityController],
-  providers: [EligibilityService, MockTierService],
+  providers: [EligibilityService, BalancesService],
   exports: [EligibilityService],
 })
 export class EligibilityModule {}
