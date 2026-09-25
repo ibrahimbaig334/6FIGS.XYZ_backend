@@ -288,8 +288,7 @@ function sock(token) {
   const bInv = listB.data.items.find((x) => x.id === inv.data.id);
   check("list isMember true after join", !!bInv && bInv.isMember === true, JSON.stringify(bInv));
   const mineB = await req("GET", "/rooms?sort=mine&limit=50", { token: B.token });
-  const flags = mineB.data.items.map((x) => x.isMember);
-  check("sort mine: own rooms first", flags.every((v, i) => i === 0 || !v || flags[i - 1]), flags.join(","));
+  check("sort mine returns only my rooms", mineB.data.items.length > 0 && mineB.data.items.every((x) => x.isMember), JSON.stringify(mineB.data.items.map((x) => x.name)));
   r = await req("GET", `/rooms/${inv.data.id}/meta`, { token: B.token });
   check("meta member after join", r.status === 200 && r.data.isMember === true, JSON.stringify(r.data));
   check("meta has description + isOwner", "description" in r.data && typeof r.data.isOwner === "boolean", "");

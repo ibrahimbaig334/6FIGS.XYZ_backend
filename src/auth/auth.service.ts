@@ -196,6 +196,10 @@ export class AuthService {
     }
   }
 
+  async userExists(userId: string): Promise<boolean> {
+    return (await this.prisma.user.count({ where: { id: userId } })) > 0;
+  }
+
   private publicUser(user: { id: string; handle: string | null; visMode: string }) {
     return { id: user.id, handle: user.handle, visMode: user.visMode };
   }

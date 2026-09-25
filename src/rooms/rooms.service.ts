@@ -51,7 +51,7 @@ export class RoomsService {
 
   /**
    * Room directory with search, filters, sorting and pagination.
-   * sort: created | members | mine (own rooms first). Redis caches the ROSTER
+   * sort: created | members | mine (only rooms I'm in, newest first). Redis caches the ROSTER
    * for 15s per user+param combo; the live presence count is filled fresh on
    * EVERY response from socket occupancy (never cached) — closing a tab drops
    * the count without any Leave click.
@@ -92,11 +92,9 @@ export class RoomsService {
     if (q.access) rooms = rooms.filter((r) => r.accessType === q.access);
     if (q.q) rooms = rooms.filter((r) => r.name.toLowerCase().includes(q.q) || (r.description ?? "").toLowerCase().includes(q.q));
     if (q.sort === "mine") {
-      // Own (joined) rooms first, then newest-first like `created`.
+      // MY ROOMS is a filter, not just an ordering: only rooms I'm in, newest first.
+      rooms = rooms.filter((r) => mySet.has(r.id));
       rooms.sort((a, b) => {
-        const ma = mySet.has(a.id) ? 0 : 1;
-        const mb = mySet.has(b.id) ? 0 : 1;
-        if (ma !== mb) return ma - mb;
         const va = a.createdAt.getTime();
         const vb = b.createdAt.getTime();
         if (va < vb) return -1 * q.order;
