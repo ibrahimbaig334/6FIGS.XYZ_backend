@@ -18,6 +18,28 @@ export const MAX_ROOMS_PER_USER = 3;
 
 const VALID_TIERS = ["TIER I", "TIER II", "TIER III"];
 
+/** Cached roster item (presence-free — onlineCount is filled fresh per response). */
+interface RoomListItem {
+  id: string;
+  name: string;
+  description: string | null;
+  imageUrl: string | null;
+  accessType: string;
+  minTier: string | null;
+  memberCount: number;
+  createdAt: Date;
+  isMember: boolean;
+  isOwner: boolean;
+}
+
+interface RoomListOut {
+  items: RoomListItem[];
+  total: number;
+  page: number;
+  limit: number;
+  ownedCount: number;
+}
+
 @Injectable()
 export class RoomsService {
   constructor(
@@ -29,9 +51,10 @@ export class RoomsService {
 
   /**
    * Room directory with search, filters, sorting and pagination.
-   * sort: created | members | mine (own rooms first). Cached 15s per
-   * user+param combo in Redis (userId is part of the key because items
-   * include per-user isMember/isOwner).
+   * sort: created | members | mine (own rooms first). Redis caches the ROSTER
+   * for 15s per user+param combo; the live presence count is filled fresh on
+   * EVERY response from socket occupancy (never cached) — closing a tab drops
+   * the count without any Leave click.
    */
   async list(userId: string, query: { q?: string; access?: string; sort?: string; order?: string; page?: number; limit?: number }) {
     const q = (query.q ?? "").trim().toLowerCase();
@@ -41,20 +64,34 @@ export class RoomsService {
     const limit = Math.min(Math.max(query.limit ?? 20, 1), 50);
     const page = Math.max(query.page ?? 1, 1);
     const cacheKey = `rooms:list:${userId}:${JSON.stringify({ q, access, sort, order, page, limit })}`;
-    const hit = await this.cache.get<unknown>(cacheKey);
-    if (hit) return hit;
+    const hit = await this.cache.get<RoomListOut>(cacheKey);
+    const out = hit ?? (await this.buildList(userId, { q, access, sort, order, page, limit }, cacheKey));
+    return this.withPresence(out);
+  }
 
-    const [allRooms, mine, allMembers, ownedCount] = await Promise.all([
+  /** Roster (cached) + fresh socket-occupancy counts on top. */
+  private withPresence(out: RoomListOut) {
+    return {
+      ...out,
+      items: out.items.map((i) => ({ ...i, onlineCount: this.presence.countInRoom(`room:${i.id}`) })),
+    };
+  }
+
+  private async buildList(
+    userId: string,
+    q: { q: string; access?: string; sort: string; order: number; page: number; limit: number },
+    cacheKey: string,
+  ): Promise<RoomListOut> {
+    const [allRooms, mine, ownedCount] = await Promise.all([
       this.prisma.room.findMany({ include: { _count: { select: { members: true } } } }),
       this.prisma.roomMember.findMany({ where: { userId }, select: { roomId: true } }),
-      this.prisma.roomMember.findMany({ select: { roomId: true, userId: true } }),
       this.prisma.room.count({ where: { createdBy: userId } }),
     ]);
     const mySet = new Set(mine.map((m) => m.roomId));
     let rooms = allRooms;
-    if (access) rooms = rooms.filter((r) => r.accessType === access);
-    if (q) rooms = rooms.filter((r) => r.name.toLowerCase().includes(q) || (r.description ?? "").toLowerCase().includes(q));
-    if (sort === "mine") {
+    if (q.access) rooms = rooms.filter((r) => r.accessType === q.access);
+    if (q.q) rooms = rooms.filter((r) => r.name.toLowerCase().includes(q.q) || (r.description ?? "").toLowerCase().includes(q.q));
+    if (q.sort === "mine") {
       // Own (joined) rooms first, then newest-first like `created`.
       rooms.sort((a, b) => {
         const ma = mySet.has(a.id) ? 0 : 1;
@@ -62,8 +99,8 @@ export class RoomsService {
         if (ma !== mb) return ma - mb;
         const va = a.createdAt.getTime();
         const vb = b.createdAt.getTime();
-        if (va < vb) return -1 * order;
-        if (va > vb) return 1 * order;
+        if (va < vb) return -1 * q.order;
+        if (va > vb) return 1 * q.order;
         return 0;
       });
     } else {
@@ -71,17 +108,17 @@ export class RoomsService {
         created: (r) => r.createdAt.getTime(),
         members: (r) => r._count.members,
       };
-      const key = by[sort];
+      const key = by[q.sort];
       rooms.sort((a, b) => {
         const va = key(a);
         const vb = key(b);
-        if (va < vb) return -1 * order;
-        if (va > vb) return 1 * order;
+        if (va < vb) return -1 * q.order;
+        if (va > vb) return 1 * q.order;
         return 0;
       });
     }
     const total = rooms.length;
-    const items = rooms.slice((page - 1) * limit, page * limit).map((r) => ({
+    const items: RoomListItem[] = rooms.slice((q.page - 1) * q.limit, q.page * q.limit).map((r) => ({
       id: r.id,
       name: r.name,
       description: r.description,
@@ -89,23 +126,13 @@ export class RoomsService {
       accessType: r.accessType,
       minTier: r.minTier,
       memberCount: r._count.members,
-      onlineCount: this.onlineIn(allMembers, r.id),
       createdAt: r.createdAt,
       isMember: mySet.has(r.id),
       isOwner: r.createdBy === userId,
     }));
-    const out = { items, total, page, limit, ownedCount };
+    const out: RoomListOut = { items, total, page: q.page, limit: q.limit, ownedCount };
     await this.cache.set(cacheKey, out, 15_000);
     return out;
-  }
-
-  /** Live presence count for a room from a preloaded membership list. */
-  private onlineIn(members: { roomId: string; userId: string }[], roomId: string): number {
-    let n = 0;
-    for (const m of members) {
-      if (m.roomId === roomId && this.presence.status(m.userId).online) n++;
-    }
-    return n;
   }
 
   async create(userId: string, body: { name?: unknown; description?: unknown; imageUrl?: unknown; accessType?: unknown; minTier?: unknown; inviteCode?: unknown }) {
@@ -235,13 +262,12 @@ export class RoomsService {
    * ask for a code at all.
    */
   async meta(userId: string, roomId: string) {
-    const [room, member, roomMembers] = await Promise.all([
+    const [room, member, memberCount] = await Promise.all([
       this.prisma.room.findUnique({ where: { id: roomId } }),
       this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } }),
-      this.prisma.roomMember.findMany({ where: { roomId }, select: { userId: true } }),
+      this.prisma.roomMember.count({ where: { roomId } }),
     ]);
     if (!room) throw new NotFoundException("Room not found");
-    const memberCount = roomMembers.length;
     return {
       id: room.id,
       name: room.name,
@@ -250,7 +276,7 @@ export class RoomsService {
       accessType: room.accessType,
       minTier: room.minTier,
       memberCount,
-      onlineCount: roomMembers.filter((m) => this.presence.status(m.userId).online).length,
+      onlineCount: this.presence.countInRoom(`room:${roomId}`),
       isMember: !!member,
       isOwner: room.createdBy === userId,
     };

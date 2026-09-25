@@ -129,7 +129,7 @@ function sock(token) {
   const linkE = await req("POST", "/wallet/link", { body: { chain: "EVM", address: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" } });
   check("E links real wallet", !!linkE.data.token, linkE.status);
   const eligE = await req("POST", "/eligibility/check", { token: linkE.data.token });
-  check("E eligibility computes (live/zero balance)", eligE.status === 200 && typeof eligE.data.total === "number", JSON.stringify(eligE.data));
+  check("E eligibility computes (live/zero balance)", ok2xx(eligE.status) && typeof eligE.data.total === "number", JSON.stringify(eligE.data));
   const redis = new Redis(envVal("REDIS_URL"), { lazyConnect: true, maxRetriesPerRequest: 1 });
   try {
     await redis.connect();
@@ -251,6 +251,7 @@ function sock(token) {
   check("room list paginated shape", Array.isArray(list.data.items) && typeof list.data.total === "number", JSON.stringify(list.data).slice(0, 120));
   check("room list leaks no code", JSON.stringify(list.data).toUpperCase().indexOf("PAIR99") === -1, "");
   check("room list has isMember/isOwner", list.data.items.every((x) => typeof x.isMember === "boolean" && typeof x.isOwner === "boolean"), "");
+  check("room list onlineCount is live number", list.data.items.every((x) => typeof x.onlineCount === "number"), "");
   check("room list ownedCount (3-room cap)", list.data.ownedCount === 3, JSON.stringify(list.data.ownedCount));
   const thirdItem = list.data.items.find((x) => x.id === third.data.id);
   check("room description in list", !!thirdItem && thirdItem.description === "third room blurb", JSON.stringify(thirdItem));
@@ -334,6 +335,14 @@ function sock(token) {
   check("room game ok", r.status === 200 && !!r.data.gameId, JSON.stringify(r.data));
   r = await req("GET", `/rooms/${inv.data.id}/game`, { token: D.token });
   check("room game non-member 403", r.status === 403, r.status);
+  const js = await emit(sA, "joinScope", { scope: "room", scopeId: inv.data.id });
+  check("WS joinScope room ok", !!js.ok, JSON.stringify(js));
+  r = await req("GET", `/rooms/${inv.data.id}/meta`, { token: B.token });
+  check("meta onlineCount tracks socket occupancy", r.status === 200 && r.data.onlineCount === 1, JSON.stringify(r.data));
+  const lv = await emit(sA, "leaveScope", { scope: "room", scopeId: inv.data.id });
+  check("WS leaveScope ok", !!lv.ok, JSON.stringify(lv));
+  r = await req("GET", `/rooms/${inv.data.id}/meta`, { token: B.token });
+  check("meta onlineCount drops after leave", r.status === 200 && r.data.onlineCount === 0, JSON.stringify(r.data));
 
   console.log("-- chat/tokens/presence --");
   r = await req("GET", "/chat/nope/xyz", { token: B.token });

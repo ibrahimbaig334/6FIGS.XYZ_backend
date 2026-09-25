@@ -47,10 +47,21 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       await this.chat.assertScopeAccess(socket.data.userId as string, body.scope, body.scopeId);
       await socket.join(`${body.scope}:${body.scopeId}`);
+      this.presence.trackJoin(socket.id, socket.data.userId as string, `${body.scope}:${body.scopeId}`);
       return { ok: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : "join failed" };
     }
+  }
+
+  @SubscribeMessage("leaveScope")
+  async leave(@MessageBody() body: { scope?: unknown; scopeId?: unknown }, @ConnectedSocket() socket: Socket) {
+    if ((body.scope !== "dm" && body.scope !== "room") || typeof body.scopeId !== "string") {
+      return { error: "scope (dm|room) + scopeId required" };
+    }
+    await socket.leave(`${body.scope}:${body.scopeId}`);
+    this.presence.trackLeave(socket.id, `${body.scope}:${body.scopeId}`);
+    return { ok: true };
   }
 
   @SubscribeMessage("sendMessage")

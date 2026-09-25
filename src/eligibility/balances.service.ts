@@ -10,7 +10,7 @@ export const BAL_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Live onchain balances → USD.
- * - EVM wallets: native balance on EVM_RPC_URL (default: Sepolia) × cached ETH price.
+ * - EVM wallets: native balance on EVM_RPC_URL (default: PublicNode Sepolia) × cached ETH price.
  * - SOL wallets: native balance on SOL_RPC_URL (default: Solana devnet) × cached SOL price.
  * - BTC: not read onchain in v1 (devnet leaves BTC out entirely).
  * Native balances sit in Redis for 10 min, so repeated profile/eligibility reads
@@ -32,7 +32,11 @@ export class BalancesService {
 
   private evm(): ethers.JsonRpcProvider {
     if (!this.evmProvider) {
-      this.evmProvider = new ethers.JsonRpcProvider(process.env.EVM_RPC_URL ?? "https://rpc.sepolia.org");
+      // PublicNode is the default because rpc.sepolia.org is unreliable;
+      // override with EVM_RPC_URL (e.g. Alchemy/Infura) anytime.
+      this.evmProvider = new ethers.JsonRpcProvider(
+        process.env.EVM_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com",
+      );
     }
     return this.evmProvider;
   }
