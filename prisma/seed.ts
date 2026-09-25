@@ -1,28 +1,16 @@
-/* Devnet seed: no bots. Removes legacy bot users (cascades their wallets,
- * tiers, memberships and bot-created rooms), then ensures one starter lounge
- * if at least one real user exists. Invite codes: DEGEN69 / ALPHA1 (docs). */
+/* Seed policy: NO mock data, ever. Only removes legacy bot users (their wallets,
+ * tiers, memberships and bot-created rooms cascade). Rooms are created by real
+ * users through the app — nothing is seeded. */
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
 async function main() {
   const bots = await prisma.user.deleteMany({ where: { isBot: true } });
-  console.log(`Removed ${bots.count} bot users`);
-  const first = await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
-  if (!first) {
-    console.log("No real users — skipping room seeds (create rooms from the app)");
-    return;
-  }
-  const existing = await prisma.room.findFirst({ where: { name: "₿ BTC LOUNGE" } });
-  if (!existing) {
-    const room = await prisma.room.create({
-      data: { name: "₿ BTC LOUNGE", accessType: "tier", minTier: "TIER I", createdBy: first.id },
-    });
-    await prisma.roomMember.create({ data: { roomId: room.id, userId: first.id } });
-    console.log("Seeded starter lounge: ₿ BTC LOUNGE");
-  } else {
-    console.log("Starter lounge already exists");
-  }
+  console.log(`Removed ${bots.count} bot users (0 expected)`);
+  const rooms = await prisma.room.count();
+  const users = await prisma.user.count();
+  console.log(`DB holds ${users} users, ${rooms} user-created rooms — nothing seeded`);
 }
 
 main()

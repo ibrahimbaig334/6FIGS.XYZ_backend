@@ -62,7 +62,25 @@ export class ChatService {
     const sender = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
     const msg = await this.prisma.message.create({ data: { scope, scopeId, senderId: userId, body: text } });
     const tickers = extractTickers(text);
+    if (scope === "dm") await this.maybeBefriend(scopeId);
     return { message: this.shape(msg, sender.handle), tickers };
+  }
+
+  /**
+   * Friendship rule: a random-matched pair becomes friends once BOTH sides have
+   * sent at least one message in their shared DM.
+   */
+  private async maybeBefriend(matchId: string): Promise<void> {
+    const match = await this.prisma.match.findUnique({ where: { id: matchId } });
+    if (!match || match.origin !== "random") return;
+    const rows = await this.prisma.message.findMany({ where: { scope: "dm", scopeId: matchId }, select: { senderId: true } });
+    if (new Set(rows.map((r) => r.senderId)).size < 2) return;
+    const [a, b] = [match.aUserId, match.bUserId].sort();
+    await this.prisma.friendship.upsert({
+      where: { aUserId_bUserId: { aUserId: a, bUserId: b } },
+      update: {},
+      create: { aUserId: a, bUserId: b },
+    });
   }
 
   /** Token card — delegates to TokensService (shared 5-min CoinGecko cache). */

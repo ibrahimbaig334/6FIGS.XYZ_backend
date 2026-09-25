@@ -28,6 +28,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const userId = this.auth.validateToken(token).userId;
       socket.data.userId = userId;
+      socket.join(`user:${userId}`);
       this.presence.markOnline(userId, socket.id);
     } catch {
       return socket.disconnect();

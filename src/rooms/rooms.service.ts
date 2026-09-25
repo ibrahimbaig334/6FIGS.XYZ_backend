@@ -13,6 +13,9 @@ export function inviteHash(code: string): string {
 /** 1v1-only: every private room holds at most two members. */
 export const ROOM_CAPACITY = 2;
 
+/** One user may own at most this many rooms — delete one to create another. */
+export const MAX_ROOMS_PER_USER = 3;
+
 const VALID_TIERS = ["TIER I", "TIER II", "TIER III"];
 
 @Injectable()
@@ -26,13 +29,14 @@ export class RoomsService {
 
   /**
    * Room directory with search, filters, sorting and pagination.
-   * sort: created | name | members. Cached 15s per user+param combo in Redis
-   * (userId is part of the key because items include per-user isMember).
+   * sort: created | members | mine (own rooms first). Cached 15s per
+   * user+param combo in Redis (userId is part of the key because items
+   * include per-user isMember/isOwner).
    */
   async list(userId: string, query: { q?: string; access?: string; sort?: string; order?: string; page?: number; limit?: number }) {
     const q = (query.q ?? "").trim().toLowerCase();
     const access = query.access === "tier" || query.access === "invite" ? query.access : undefined;
-    const sort = query.sort === "name" || query.sort === "members" ? query.sort : "created";
+    const sort = query.sort === "mine" || query.sort === "members" ? query.sort : "created";
     const order = query.order === "asc" ? 1 : -1;
     const limit = Math.min(Math.max(query.limit ?? 20, 1), 50);
     const page = Math.max(query.page ?? 1, 1);
@@ -43,42 +47,74 @@ export class RoomsService {
     let rooms = await this.prisma.room.findMany({ include: { _count: { select: { members: true } } } });
     const mine = await this.prisma.roomMember.findMany({ where: { userId }, select: { roomId: true } });
     const mySet = new Set(mine.map((m) => m.roomId));
+    const allMembers = await this.prisma.roomMember.findMany({ select: { roomId: true, userId: true } });
+    const ownedCount = await this.prisma.room.count({ where: { createdBy: userId } });
     if (access) rooms = rooms.filter((r) => r.accessType === access);
-    if (q) rooms = rooms.filter((r) => r.name.toLowerCase().includes(q));
-    const by: Record<string, (r: (typeof rooms)[number]) => string | number> = {
-      created: (r) => r.createdAt.getTime(),
-      name: (r) => r.name.toLowerCase(),
-      members: (r) => r._count.members,
-    };
-    const key = by[sort];
-    rooms.sort((a, b) => {
-      const va = key(a);
-      const vb = key(b);
-      if (va < vb) return -1 * order;
-      if (va > vb) return 1 * order;
-      return 0;
-    });
+    if (q) rooms = rooms.filter((r) => r.name.toLowerCase().includes(q) || (r.description ?? "").toLowerCase().includes(q));
+    if (sort === "mine") {
+      // Own (joined) rooms first, then newest-first like `created`.
+      rooms.sort((a, b) => {
+        const ma = mySet.has(a.id) ? 0 : 1;
+        const mb = mySet.has(b.id) ? 0 : 1;
+        if (ma !== mb) return ma - mb;
+        const va = a.createdAt.getTime();
+        const vb = b.createdAt.getTime();
+        if (va < vb) return -1 * order;
+        if (va > vb) return 1 * order;
+        return 0;
+      });
+    } else {
+      const by: Record<string, (r: (typeof rooms)[number]) => string | number> = {
+        created: (r) => r.createdAt.getTime(),
+        members: (r) => r._count.members,
+      };
+      const key = by[sort];
+      rooms.sort((a, b) => {
+        const va = key(a);
+        const vb = key(b);
+        if (va < vb) return -1 * order;
+        if (va > vb) return 1 * order;
+        return 0;
+      });
+    }
     const total = rooms.length;
     const items = rooms.slice((page - 1) * limit, page * limit).map((r) => ({
       id: r.id,
       name: r.name,
+      description: r.description,
       imageUrl: r.imageUrl,
       accessType: r.accessType,
       minTier: r.minTier,
       memberCount: r._count.members,
+      onlineCount: this.onlineIn(allMembers, r.id),
       createdAt: r.createdAt,
       isMember: mySet.has(r.id),
+      isOwner: r.createdBy === userId,
     }));
-    const out = { items, total, page, limit };
+    const out = { items, total, page, limit, ownedCount };
     await this.cache.set(cacheKey, out, 15_000);
     return out;
   }
 
-  async create(userId: string, body: { name?: unknown; imageUrl?: unknown; accessType?: unknown; minTier?: unknown; inviteCode?: unknown }) {
+  /** Live presence count for a room from a preloaded membership list. */
+  private onlineIn(members: { roomId: string; userId: string }[], roomId: string): number {
+    let n = 0;
+    for (const m of members) {
+      if (m.roomId === roomId && this.presence.status(m.userId).online) n++;
+    }
+    return n;
+  }
+
+  async create(userId: string, body: { name?: unknown; description?: unknown; imageUrl?: unknown; accessType?: unknown; minTier?: unknown; inviteCode?: unknown }) {
     const name = String(body.name ?? "").trim().slice(0, 48);
     if (name.length < 3) throw new BadRequestException("Room name needs 3+ chars");
+    const description = String(body.description ?? "").trim().slice(0, 160) || null;
     const accessType = String(body.accessType ?? "");
     if (accessType !== "tier" && accessType !== "invite") throw new BadRequestException("accessType must be tier or invite");
+    const owned = await this.prisma.room.count({ where: { createdBy: userId } });
+    if (owned >= MAX_ROOMS_PER_USER) {
+      throw new ForbiddenException(`Room limit reached (${MAX_ROOMS_PER_USER}) — delete one to create another`);
+    }
     let minTier: string | null = null;
     let codeHash: string | null = null;
     if (accessType === "tier") {
@@ -90,7 +126,7 @@ export class RoomsService {
       codeHash = inviteHash(code);
     }
     const room = await this.prisma.room.create({
-      data: { name, imageUrl: body.imageUrl ? String(body.imageUrl).slice(0, 512) : null, accessType, minTier, inviteCodeHash: codeHash, createdBy: userId },
+      data: { name, description, imageUrl: body.imageUrl ? String(body.imageUrl).slice(0, 512) : null, accessType, minTier, inviteCodeHash: codeHash, createdBy: userId },
     });
     await this.prisma.roomMember.create({ data: { roomId: room.id, userId } });
     await this.cache.delPrefix("rooms:list:");
@@ -103,6 +139,11 @@ export class RoomsService {
   async join(userId: string, roomId: string, code?: unknown) {
     const room = await this.prisma.room.findUnique({ where: { id: roomId } });
     if (!room) throw new NotFoundException("Room not found");
+    // Invite rooms enforce the password for EVERYONE — including the creator and
+    // current members — before any membership shortcut.
+    if (room.accessType === "invite") {
+      if (inviteHash(String(code ?? "")) !== room.inviteCodeHash) throw new ForbiddenException("Wrong invite code");
+    }
     const existing = await this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } });
     if (existing) return { ok: true, roomId };
     const count = await this.prisma.roomMember.count({ where: { roomId } });
@@ -113,10 +154,31 @@ export class RoomsService {
       if (tierRank(elig.tier) < tierRank(room.minTier)) {
         throw new ForbiddenException(`Needs ${room.minTier} (you are ${elig.tier})`);
       }
-    } else {
-      if (inviteHash(String(code ?? "")) !== room.inviteCodeHash) throw new ForbiddenException("Wrong invite code");
     }
     await this.prisma.roomMember.create({ data: { roomId, userId } });
+    await this.cache.delPrefix("rooms:list:");
+    return { ok: true, roomId };
+  }
+
+  /** Leave a room. Empty rooms survive — only the owner can delete (DELETE). */
+  async leave(userId: string, roomId: string) {
+    const room = await this.prisma.room.findUnique({ where: { id: roomId } });
+    if (!room) throw new NotFoundException("Room not found");
+    const member = await this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } });
+    if (!member) throw new ForbiddenException("You are not in this room");
+    await this.prisma.roomMember.delete({ where: { roomId_userId: { roomId, userId } } });
+    await this.cache.delPrefix("rooms:list:");
+    return { ok: true, roomId };
+  }
+
+  /** Creator-only room deletion (members, room-scoped messages and the room go). */
+  async remove(userId: string, roomId: string) {
+    const room = await this.prisma.room.findUnique({ where: { id: roomId } });
+    if (!room) throw new NotFoundException("Room not found");
+    if (room.createdBy !== userId) throw new ForbiddenException("Only the room creator can delete it");
+    await this.prisma.message.deleteMany({ where: { scope: "room", scopeId: roomId } });
+    await this.prisma.roomMember.deleteMany({ where: { roomId } });
+    await this.prisma.room.delete({ where: { id: roomId } });
     await this.cache.delPrefix("rooms:list:");
     return { ok: true, roomId };
   }
@@ -154,7 +216,7 @@ export class RoomsService {
       if (existing && existing.games[0] && existing.games[0].status === "open") {
         return { gameId: existing.games[0].id, matchId: existing.id };
       }
-      const match = await this.prisma.match.create({ data: { aUserId: u1, bUserId: u2 } });
+      const match = await this.prisma.match.create({ data: { aUserId: u1, bUserId: u2, origin: "room" } });
       const game = await this.prisma.game.create({ data: { matchId: match.id } });
       return { gameId: game.id, matchId: match.id };
     } finally {
@@ -171,15 +233,19 @@ export class RoomsService {
     const room = await this.prisma.room.findUnique({ where: { id: roomId } });
     if (!room) throw new NotFoundException("Room not found");
     const member = await this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } });
-    const memberCount = await this.prisma.roomMember.count({ where: { roomId } });
+    const roomMembers = await this.prisma.roomMember.findMany({ where: { roomId }, select: { userId: true } });
+    const memberCount = roomMembers.length;
     return {
       id: room.id,
       name: room.name,
+      description: room.description,
       imageUrl: room.imageUrl,
       accessType: room.accessType,
       minTier: room.minTier,
       memberCount,
+      onlineCount: roomMembers.filter((m) => this.presence.status(m.userId).online).length,
       isMember: !!member,
+      isOwner: room.createdBy === userId,
     };
   }
 

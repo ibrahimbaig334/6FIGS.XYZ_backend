@@ -47,6 +47,7 @@ model EligibilityCache {
 model Room {
   id             String       @id @default(cuid())
   name           String
+  description    String?
   imageUrl       String?
   accessType     String       // "tier" | "invite"
   minTier        String?
@@ -72,11 +73,41 @@ model Match {
   aUserId   String
   bUserId   String
   status    String   @default("open")
+  origin    String   @default("challenge") // "random" | "challenge" | "room"
   createdAt DateTime @default(now())
   games     Game[]
 
   @@index([aUserId])
   @@index([bUserId])
+}
+
+// Random-match waiting tickets (auto-expire after 2 min, cleaned on attempt).
+model QueueTicket {
+  userId    String   @id
+  createdAt DateTime @default(now())
+}
+
+// Mutual chat friendship: random-matched pair with ≥1 DM each. Ordered pair.
+model Friendship {
+  aUserId   String
+  bUserId   String
+  createdAt DateTime @default(now())
+
+  @@id([aUserId, bUserId])
+}
+
+// 1v1 room invitations between friends.
+model RoomRequest {
+  id         String   @id @default(cuid())
+  fromUserId String
+  toUserId   String
+  status     String   @default("pending") // pending | accepted | declined | cancelled
+  roomId     String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([toUserId, status])
+  @@index([fromUserId, status])
 }
 
 model Game {

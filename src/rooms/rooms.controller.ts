@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { CurrentUser } from "../auth/current-user";
 import { JwtGuard } from "../auth/jwt.guard";
 import { RoomsService } from "./rooms.service";
@@ -36,6 +36,16 @@ export class RoomsController {
   @Post(":id/join")
   join(@CurrentUser() userId: string, @Param("id") id: string, @Body() body: { code?: unknown }) {
     return this.rooms.join(userId, id, body.code);
+  }
+
+  @Post(":id/leave")
+  leave(@CurrentUser() userId: string, @Param("id") id: string) {
+    return this.rooms.leave(userId, id);
+  }
+
+  @Delete(":id")
+  remove(@CurrentUser() userId: string, @Param("id") id: string) {
+    return this.rooms.remove(userId, id);
   }
 
   @Get(":id/meta")
