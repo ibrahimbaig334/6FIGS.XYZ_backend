@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { Wallet } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { tierOf } from "../common/tiers";
 import { BalancesService } from "./balances.service";
@@ -16,8 +17,7 @@ export class EligibilityService {
     private readonly balances: BalancesService,
   ) {}
 
-  private async valueWallets(userId: string): Promise<{ balances: WalletBalance[]; total: number }> {
-    const wallets = await this.prisma.wallet.findMany({ where: { userId } });
+  private async valueWallets(wallets: Pick<Wallet, "id" | "chain" | "addressEnc" | "mockUsd">[]): Promise<{ balances: WalletBalance[]; total: number }> {
     const balances = await Promise.all(
       wallets.map(async (w) => ({
         walletId: w.id,
@@ -38,7 +38,12 @@ export class EligibilityService {
 
   /** Recompute from live onchain balances and refresh the cache row. */
   async check(userId: string) {
-    const { balances, total } = await this.valueWallets(userId);
+    const wallets = await this.prisma.wallet.findMany({ where: { userId } });
+    return this.checkWith(userId, wallets);
+  }
+
+  private async checkWith(userId: string, wallets: Pick<Wallet, "id" | "chain" | "addressEnc" | "mockUsd">[]) {
+    const { balances, total } = await this.valueWallets(wallets);
     const tier = tierOf(total);
     const perChain: Record<string, number> = {};
     for (const b of balances) perChain[b.chain] = (perChain[b.chain] ?? 0) + b.usd;
@@ -58,13 +63,26 @@ export class EligibilityService {
     return { tier: row.tier, total, assetPct, balances, expiresAt: row.expiresAt, walletCount: balances.length };
   }
 
-  /** Cached read with refresh-on-stale (every cache refresh re-verifies). */
-  async me(userId: string) {
-    const cached = await this.prisma.eligibilityCache.findUnique({ where: { userId } });
+  /**
+   * Cached read with refresh-on-stale (every cache refresh re-verifies).
+   * Cache row + wallets load in parallel; callers holding wallets pass them
+   * in to skip the duplicate query.
+   */
+  async me(userId: string, preloaded?: Pick<Wallet, "id" | "chain" | "addressEnc" | "mockUsd">[]) {
+    const cachedP = this.prisma.eligibilityCache.findUnique({ where: { userId } });
+    const walletsP = preloaded ? Promise.resolve(preloaded) : this.prisma.wallet.findMany({ where: { userId } });
+    const [cached, wallets] = await Promise.all([cachedP, walletsP]);
     if (cached && cached.expiresAt > new Date()) {
-      const { balances, total } = await this.valueWallets(userId);
-      return { tier: cached.tier, total, assetPct: cached.assetPct, balances, expiresAt: cached.expiresAt, walletCount: balances.length };
+      const { balances, total } = await this.valueWallets(wallets);
+      return {
+        tier: cached.tier,
+        total,
+        assetPct: cached.assetPct as unknown as Record<string, number>,
+        balances,
+        expiresAt: cached.expiresAt,
+        walletCount: balances.length,
+      };
     }
-    return this.check(userId);
+    return this.checkWith(userId, wallets);
   }
 }

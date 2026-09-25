@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { RoomsService } from "../rooms/rooms.service";
 import { TokensService } from "./tokens.service";
@@ -45,21 +46,27 @@ export class ChatService {
       cursorDate = new Date(cursor);
       if (Number.isNaN(cursorDate.getTime())) throw new BadRequestException("Invalid cursor");
     }
-    const rows = await this.prisma.message.findMany({
-      where: { scope, scopeId, ...(cursorDate ? { createdAt: { lt: cursorDate } } : {}) },
-      include: { sender: true },
-      orderBy: { createdAt: "desc" },
-      take,
-    });
-    const items = rows.reverse().map((m) => this.shape(m, m.sender.handle));
+    // Single round trip: messages + sender handles in one JOIN.
+    const rows = await this.prisma.$queryRaw<
+      { id: string; scope: string; scopeId: string; senderId: string; body: string; createdAt: Date; handle: string | null }[]
+    >`
+      SELECT m.id, m.scope, m."scopeId", m."senderId", m.body, m."createdAt", u.handle
+      FROM "Message" m JOIN "User" u ON u.id = m."senderId"
+      WHERE m.scope = ${scope} AND m."scopeId" = ${scopeId}
+      ${cursorDate ? Prisma.sql`AND m."createdAt" < ${cursorDate}` : Prisma.empty}
+      ORDER BY m."createdAt" DESC LIMIT ${take}
+    `;
+    const items = rows.reverse().map((m) => this.shape(m, m.handle));
     return { items, nextCursor: rows.length ? rows[0].createdAt.toISOString() : null };
   }
 
   async post(userId: string, scope: string, scopeId: string, body: string) {
     const text = body.trim().slice(0, 240);
     if (!text) throw new BadRequestException("Empty message");
-    await this.assertScopeAccess(userId, scope, scopeId);
-    const sender = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    const [, sender] = await Promise.all([
+      this.assertScopeAccess(userId, scope, scopeId),
+      this.prisma.user.findUniqueOrThrow({ where: { id: userId } }),
+    ]);
     const msg = await this.prisma.message.create({ data: { scope, scopeId, senderId: userId, body: text } });
     const tickers = extractTickers(text);
     if (scope === "dm") await this.maybeBefriend(scopeId);

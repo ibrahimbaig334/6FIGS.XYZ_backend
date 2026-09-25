@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { randomBytes } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { PresenceService } from "../presence/presence.service";
@@ -34,19 +35,31 @@ export class PlayService {
     };
   }
 
-  /** Verified-holders directory (fresh tiers only). */
+  /**
+   * Verified-holders directory (fresh tiers only). Single round trip: the
+   * eligibility→user JOIN runs in Postgres instead of N Prisma queries.
+   */
   async online(selfId: string | null, filter?: string, q?: string) {
-    const rows = await this.prisma.eligibilityCache.findMany({
-      where: { expiresAt: { gt: new Date() }, ...(filter ? { tier: filter } : {}) },
-      include: { user: true },
-      orderBy: { verifiedAt: "desc" },
-      take: 100,
-    });
-    const query = (q ?? "").toLowerCase();
-    return rows
-      .filter((r) => r.userId !== selfId)
-      .filter((r) => !query || (r.user.handle ?? "").toLowerCase().includes(query))
-      .map((r) => this.pubUser(r.user, r.tier));
+    const query = (q ?? "").trim();
+    const rows = await this.prisma.$queryRaw<
+      { id: string; handle: string | null; visMode: string; tags: string[]; tier: string }[]
+    >`
+      SELECT u.id, u.handle, u."visMode", u.tags, e.tier
+      FROM "EligibilityCache" e JOIN "User" u ON u.id = e."userId"
+      WHERE e."expiresAt" > NOW()
+      ${selfId ? Prisma.sql`AND u.id <> ${selfId}` : Prisma.empty}
+      ${filter ? Prisma.sql`AND e.tier = ${filter}` : Prisma.empty}
+      ${query ? Prisma.sql`AND u.handle ILIKE ${"%" + query + "%"}` : Prisma.empty}
+      ORDER BY e."verifiedAt" DESC LIMIT 100
+    `;
+    return rows.map((r) => ({
+      id: r.id,
+      handle: r.handle ?? `user_${r.id.slice(-4)}`,
+      tier: r.tier,
+      visMode: r.visMode,
+      tags: r.tags,
+      ...this.presence.status(r.id),
+    }));
   }
 
   /**
@@ -129,9 +142,11 @@ export class PlayService {
     });
     if (!m || !m.games[0] || m.games[0].status !== "open") return null;
     const oppId = m.aUserId === selfId ? m.bUserId : m.aUserId;
-    const opp = await this.prisma.user.findUnique({ where: { id: oppId } });
+    const [opp, cache] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: oppId } }),
+      this.prisma.eligibilityCache.findUnique({ where: { userId: oppId } }),
+    ]);
     if (!opp) return null;
-    const cache = await this.prisma.eligibilityCache.findUnique({ where: { userId: oppId } });
     return {
       matchId: m.id,
       gameId: m.games[0].id,
@@ -168,8 +183,10 @@ export class PlayService {
     });
     const ids = rows.map((r) => (r.aUserId === selfId ? r.bUserId : r.aUserId));
     if (!ids.length) return [];
-    const users = await this.prisma.user.findMany({ where: { id: { in: ids } } });
-    const caches = await this.prisma.eligibilityCache.findMany({ where: { userId: { in: ids } } });
+    const [users, caches] = await Promise.all([
+      this.prisma.user.findMany({ where: { id: { in: ids } } }),
+      this.prisma.eligibilityCache.findMany({ where: { userId: { in: ids } } }),
+    ]);
     const tierBy = new Map(caches.map((c) => [c.userId, c.tier]));
     const query = (q ?? "").toLowerCase();
     return users

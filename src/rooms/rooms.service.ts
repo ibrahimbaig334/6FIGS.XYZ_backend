@@ -44,11 +44,14 @@ export class RoomsService {
     const hit = await this.cache.get<unknown>(cacheKey);
     if (hit) return hit;
 
-    let rooms = await this.prisma.room.findMany({ include: { _count: { select: { members: true } } } });
-    const mine = await this.prisma.roomMember.findMany({ where: { userId }, select: { roomId: true } });
+    const [allRooms, mine, allMembers, ownedCount] = await Promise.all([
+      this.prisma.room.findMany({ include: { _count: { select: { members: true } } } }),
+      this.prisma.roomMember.findMany({ where: { userId }, select: { roomId: true } }),
+      this.prisma.roomMember.findMany({ select: { roomId: true, userId: true } }),
+      this.prisma.room.count({ where: { createdBy: userId } }),
+    ]);
     const mySet = new Set(mine.map((m) => m.roomId));
-    const allMembers = await this.prisma.roomMember.findMany({ select: { roomId: true, userId: true } });
-    const ownedCount = await this.prisma.room.count({ where: { createdBy: userId } });
+    let rooms = allRooms;
     if (access) rooms = rooms.filter((r) => r.accessType === access);
     if (q) rooms = rooms.filter((r) => r.name.toLowerCase().includes(q) || (r.description ?? "").toLowerCase().includes(q));
     if (sort === "mine") {
@@ -144,9 +147,11 @@ export class RoomsService {
     if (room.accessType === "invite") {
       if (inviteHash(String(code ?? "")) !== room.inviteCodeHash) throw new ForbiddenException("Wrong invite code");
     }
-    const existing = await this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } });
+    const [existing, count] = await Promise.all([
+      this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } }),
+      this.prisma.roomMember.count({ where: { roomId } }),
+    ]);
     if (existing) return { ok: true, roomId };
-    const count = await this.prisma.roomMember.count({ where: { roomId } });
     if (count >= ROOM_CAPACITY) throw new ForbiddenException("Room is full — private rooms are 1v1");
     const elig = await this.eligibility.me(userId);
     if (!elig.tier) throw new ForbiddenException("Verify ≥ $100K in Profile first");
@@ -184,9 +189,8 @@ export class RoomsService {
   }
 
   async members(userId: string, roomId: string) {
-    const member = await this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } });
-    if (!member) throw new ForbiddenException("Join the room first");
     const rows = await this.prisma.roomMember.findMany({ where: { roomId }, include: { user: true } });
+    if (!rows.some((m) => m.userId === userId)) throw new ForbiddenException("Join the room first");
     return rows.map((m) => ({
       id: m.user.id,
       handle: m.user.handle ?? `user_${m.user.id.slice(-4)}`,
@@ -201,11 +205,12 @@ export class RoomsService {
    * and create two different games (boards wouldn't sync).
    */
   async game(userId: string, roomId: string) {
-    await this.assertMember(userId, roomId);
     const lockKey = `lock:room-game:${roomId}`;
     const locked = await this.cache.lock(lockKey, 5000, 2000);
     try {
+      // Membership check rides on the same fetch (no extra round trip).
       const members = await this.prisma.roomMember.findMany({ where: { roomId }, orderBy: { joinedAt: "asc" } });
+      if (!members.some((m) => m.userId === userId)) throw new ForbiddenException("Join the room first");
       if (members.length < 2) throw new BadRequestException("Waiting for your 1v1 peer to join");
       const [u1, u2] = [members[0].userId, members[1].userId];
       const existing = await this.prisma.match.findFirst({
@@ -230,10 +235,12 @@ export class RoomsService {
    * ask for a code at all.
    */
   async meta(userId: string, roomId: string) {
-    const room = await this.prisma.room.findUnique({ where: { id: roomId } });
+    const [room, member, roomMembers] = await Promise.all([
+      this.prisma.room.findUnique({ where: { id: roomId } }),
+      this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } }),
+      this.prisma.roomMember.findMany({ where: { roomId }, select: { userId: true } }),
+    ]);
     if (!room) throw new NotFoundException("Room not found");
-    const member = await this.prisma.roomMember.findUnique({ where: { roomId_userId: { roomId, userId } } });
-    const roomMembers = await this.prisma.roomMember.findMany({ where: { roomId }, select: { userId: true } });
     const memberCount = roomMembers.length;
     return {
       id: room.id,

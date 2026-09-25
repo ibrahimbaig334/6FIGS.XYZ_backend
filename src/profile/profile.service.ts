@@ -20,9 +20,11 @@ export class ProfileService {
   ) {}
 
   async me(userId: string) {
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
-    const wallets = await this.prisma.wallet.findMany({ where: { userId }, orderBy: { id: "asc" } });
-    const elig = await this.eligibility.me(userId);
+    const [user, wallets] = await Promise.all([
+      this.prisma.user.findUniqueOrThrow({ where: { id: userId } }),
+      this.prisma.wallet.findMany({ where: { userId }, orderBy: { id: "asc" } }),
+    ]);
+    const elig = await this.eligibility.me(userId, wallets);
     return {
       id: user.id,
       handle: user.handle,

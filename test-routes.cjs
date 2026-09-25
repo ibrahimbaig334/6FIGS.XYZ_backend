@@ -2,6 +2,19 @@
  * Devnet tiers: I > $10 · II > $100 · III > $1,000 (mockUsd test hook drives tiers). */
 const { ethers } = require("ethers");
 const { io } = require("../frontend/node_modules/socket.io-client");
+const fs = require("fs");
+const path = require("path");
+const Redis = require("ioredis");
+
+function envVal(k) {
+  if (process.env[k]) return process.env[k];
+  const raw = fs.readFileSync(path.join(__dirname, ".env"), "utf8");
+  for (const line of raw.split("\n")) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (m && m[1] === k) return m[2].replace(/^["']|["']$/g, "");
+  }
+  return "";
+}
 
 const BASE = "http://127.0.0.1:4000";
 let pass = 0;
@@ -111,6 +124,20 @@ function sock(token) {
   const eligA = await req("POST", "/eligibility/check", { token: tokenA });
   check("A tier III (devnet)", eligA.data.tier === "TIER III", JSON.stringify(eligA.data));
   check("eligibility has balances", Array.isArray(eligA.data.balances) && eligA.data.balances[0].usd === 200000, JSON.stringify(eligA.data));
+
+  // RPC balance cache: a real (unmocked) wallet populates bal:* in Redis (10-min reuse)
+  const linkE = await req("POST", "/wallet/link", { body: { chain: "EVM", address: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" } });
+  check("E links real wallet", !!linkE.data.token, linkE.status);
+  const eligE = await req("POST", "/eligibility/check", { token: linkE.data.token });
+  check("E eligibility computes (live/zero balance)", eligE.status === 200 && typeof eligE.data.total === "number", JSON.stringify(eligE.data));
+  const redis = new Redis(envVal("REDIS_URL"), { lazyConnect: true, maxRetriesPerRequest: 1 });
+  try {
+    await redis.connect();
+    const keys = await redis.keys("bal:EVM:0xeeee*");
+    check("RPC balance cached in Redis (fails only if RPC unreachable, e.g. VPN)", keys.length > 0, keys.join(",") || "no bal: key — RPC unreachable?");
+  } finally {
+    redis.disconnect();
+  }
 
   r = await req("GET", "/wallet/user");
   check("wallet/user unauth 401", r.status === 401, r.status);
