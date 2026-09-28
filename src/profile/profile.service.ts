@@ -1,8 +1,13 @@
-import { BadRequestException, ConflictException, Injectable } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { EligibilityService } from "../eligibility/eligibility.service";
 import { VIS_MODES, shortAddr } from "../common/tiers";
+import { HANDLE_PATTERN } from "../common/constants";
 
 function decodeAddr(enc: string | null): string {
   try {
@@ -22,7 +27,10 @@ export class ProfileService {
   async me(userId: string) {
     const [user, wallets] = await Promise.all([
       this.prisma.user.findUniqueOrThrow({ where: { id: userId } }),
-      this.prisma.wallet.findMany({ where: { userId }, orderBy: { id: "asc" } }),
+      this.prisma.wallet.findMany({
+        where: { userId },
+        orderBy: { id: "asc" },
+      }),
     ]);
     const elig = await this.eligibility.me(userId, wallets);
     return {
@@ -33,7 +41,13 @@ export class ProfileService {
       eligibility: elig,
       wallets: wallets.map((w) => {
         const address = decodeAddr(w.addressEnc);
-        return { id: w.id, chain: w.chain, address, display: shortAddr(address), mockUsd: w.mockUsd };
+        return {
+          id: w.id,
+          chain: w.chain,
+          address,
+          display: shortAddr(address),
+          mockUsd: w.mockUsd,
+        };
       }),
     };
   }
@@ -42,20 +56,29 @@ export class ProfileService {
     const data: { handle?: string | null; visMode?: string } = {};
     if (body.handle !== undefined) {
       const h = String(body.handle).trim();
-      if (h && !/^[a-zA-Z0-9_.]{3,24}$/.test(h)) throw new BadRequestException("Handle: 3–24 chars, letters/numbers/._");
+      if (h && !HANDLE_PATTERN.test(h))
+        throw new BadRequestException("Handle: 3–24 chars, letters/numbers/._");
       data.handle = h || null;
     }
     if (body.visMode !== undefined) {
       if (!VIS_MODES.includes(body.visMode as (typeof VIS_MODES)[number])) {
-        throw new BadRequestException("visMode must be HIDDEN, CATEGORIES or FULL");
+        throw new BadRequestException(
+          "visMode must be HIDDEN, CATEGORIES or FULL",
+        );
       }
       data.visMode = String(body.visMode);
     }
     try {
-      const user = await this.prisma.user.update({ where: { id: userId }, data });
+      const user = await this.prisma.user.update({
+        where: { id: userId },
+        data,
+      });
       return { id: user.id, handle: user.handle, visMode: user.visMode };
     } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2002"
+      ) {
         throw new ConflictException("Handle already taken");
       }
       throw e;

@@ -3,10 +3,9 @@ import { ethers } from "ethers";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { TokensService } from "../chat/tokens.service";
 import { CacheService } from "../common/cache.service";
+import { BAL_CACHE_MS } from "../common/constants";
+import { requiredEnv } from "../common/env";
 import { isDevnet } from "../common/tiers";
-
-/** Native chain balances are reusable for 10 min (ZKP replaces this anyway). */
-export const BAL_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Live onchain balances → USD.
@@ -22,7 +21,6 @@ export const BAL_TTL_MS = 10 * 60 * 1000;
 @Injectable()
 export class BalancesService {
   private readonly log = new Logger("BalancesService");
-  private evmProvider: ethers.JsonRpcProvider | null = null;
   private solConnection: Connection | null = null;
 
   constructor(
@@ -30,42 +28,54 @@ export class BalancesService {
     private readonly cache: CacheService,
   ) {}
 
-  private evm(): ethers.JsonRpcProvider {
-    if (!this.evmProvider) {
-      // PublicNode is the default because rpc.sepolia.org is unreliable;
-      // override with EVM_RPC_URL (e.g. Alchemy/Infura) anytime.
-      this.evmProvider = new ethers.JsonRpcProvider(
-        process.env.EVM_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com",
-      );
-    }
-    return this.evmProvider;
+  /** Configured primary + public fallback: one dead RPC must never zero every balance. */
+  private evmUrls(): string[] {
+    return [requiredEnv("EVM_RPC_URL")];
   }
 
   private sol(): Connection {
     if (!this.solConnection) {
-      this.solConnection = new Connection(process.env.SOL_RPC_URL ?? "https://api.devnet.solana.com", "confirmed");
+      this.solConnection = new Connection(
+        requiredEnv("SOL_RPC_URL"),
+        "confirmed",
+      );
     }
     return this.solConnection;
   }
 
-  async usdFor(chain: string, address: string, mockUsd: number | null): Promise<number> {
+  async usdFor(
+    chain: string,
+    address: string,
+    mockUsd: number | null,
+  ): Promise<number> {
     if (isDevnet() && mockUsd !== null && mockUsd !== undefined) return mockUsd;
     try {
       if (chain === "EVM") {
-        const [eth, price] = await Promise.all([this.evmNative(address), this.tokens.getPrice("ETH")]);
+        const [eth, price] = await Promise.all([
+          this.evmNative(address),
+          this.tokens.getPrice("ETH"),
+        ]);
         return price ? eth * price : 0;
       }
       if (chain === "SOL") {
-        const [sol, price] = await Promise.all([this.solNative(address), this.tokens.getPrice("SOL")]);
+        const [sol, price] = await Promise.all([
+          this.solNative(address),
+          this.tokens.getPrice("SOL"),
+        ]);
         return price ? sol * price : 0;
       }
     } catch (err) {
-      this.log.warn(`Balance lookup failed ${chain}:${address.slice(0, 10)}… — counting $0`);
+      this.log.warn(
+        `Balance lookup failed ${chain}:${address.slice(0, 10)}… — counting $0`,
+      );
     }
     return 0;
   }
 
-  private async cachedNative(key: string, fetch: () => Promise<number>): Promise<number> {
+  private async cachedNative(
+    key: string,
+    fetch: () => Promise<number>,
+  ): Promise<number> {
     let hit: number | undefined;
     try {
       const raw = await this.cache.get<string>(key);
@@ -76,7 +86,7 @@ export class BalancesService {
     if (hit !== undefined && Number.isFinite(hit)) return hit;
     const native = await fetch();
     try {
-      await this.cache.set(key, String(native), BAL_TTL_MS);
+      await this.cache.set(key, String(native), BAL_CACHE_MS);
     } catch {
       /* cache write failure must not fail the lookup */
     }
@@ -85,8 +95,16 @@ export class BalancesService {
 
   private evmNative(address: string): Promise<number> {
     return this.cachedNative(`bal:EVM:${address}`, async () => {
-      const wei = await this.evm().getBalance(address);
-      return Number(ethers.formatEther(wei));
+      let lastErr: unknown = null;
+      for (const url of this.evmUrls()) {
+        try {
+          const wei = await new ethers.JsonRpcProvider(url).getBalance(address);
+          return Number(ethers.formatEther(wei));
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw lastErr instanceof Error ? lastErr : new Error("EVM RPC failed");
     });
   }
 

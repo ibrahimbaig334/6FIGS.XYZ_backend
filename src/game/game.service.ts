@@ -1,21 +1,43 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { PresenceService } from "../presence/presence.service";
 
-const LINES = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+const LINES = [
+  [0, 1, 2],
+  [3, 4, 5],
+  [6, 7, 8],
+  [0, 3, 6],
+  [1, 4, 7],
+  [2, 5, 8],
+  [0, 4, 8],
+  [2, 4, 6],
+];
 
 function checkWinner(board: string): string | null {
   for (const [a, b, c] of LINES) {
-    if (board[a] !== "." && board[a] === board[b] && board[b] === board[c]) return board[a];
+    if (board[a] !== "." && board[a] === board[b] && board[b] === board[c])
+      return board[a];
   }
   return null;
 }
 
 @Injectable()
 export class GameService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly presence: PresenceService,
+  ) {}
 
   private async load(gameId: string, userId: string) {
-    const game = await this.prisma.game.findUnique({ where: { id: gameId }, include: { match: true } });
+    const game = await this.prisma.game.findUnique({
+      where: { id: gameId },
+      include: { match: true },
+    });
     if (!game) throw new NotFoundException("Game not found");
     if (game.match.aUserId !== userId && game.match.bUserId !== userId) {
       throw new ForbiddenException("Not your game");
@@ -23,30 +45,78 @@ export class GameService {
     return game;
   }
 
-  private shape(game: { id: string; board: string; turn: string; status: string; winner: string | null; match: { aUserId: string; bUserId: string } }, userId: string) {
+  private shape(
+    game: {
+      id: string;
+      board: string;
+      turn: string;
+      status: string;
+      winner: string | null;
+      match: { aUserId: string; bUserId: string };
+    },
+    userId: string,
+  ) {
     const youAre = game.match.aUserId === userId ? "X" : "O";
-    const oppId = game.match.aUserId === userId ? game.match.bUserId : game.match.aUserId;
-    return { id: game.id, matchId: game.match ? (game as unknown as { matchId: string }).matchId : undefined, board: game.board, turn: game.turn, status: game.status, winner: game.winner, youAre, oppId };
+    const oppId =
+      game.match.aUserId === userId ? game.match.bUserId : game.match.aUserId;
+    return {
+      id: game.id,
+      matchId: game.match
+        ? (game as unknown as { matchId: string }).matchId
+        : undefined,
+      board: game.board,
+      turn: game.turn,
+      status: game.status,
+      winner: game.winner,
+      youAre,
+      oppId,
+    };
   }
 
   async get(gameId: string, userId: string) {
     const game = await this.load(gameId, userId);
-    const opp = await this.prisma.user.findUnique({ where: { id: this.shape(game, userId).oppId } });
+    const opp = await this.prisma.user.findUnique({
+      where: { id: this.shape(game, userId).oppId },
+    });
     return {
       ...this.shape(game, userId),
-      opponent: opp ? { id: opp.id, handle: opp.handle ?? `user_${opp.id.slice(-4)}`, visMode: opp.visMode } : null,
+      opponent: opp
+        ? {
+            id: opp.id,
+            handle: opp.handle ?? `user_${opp.id.slice(-4)}`,
+            visMode: opp.visMode,
+          }
+        : null,
+    };
+  }
+
+  /** Opponent presence for the "left" overlay — memory-only, zero DB trips. */
+  async live(gameId: string, userId: string) {
+    const game = await this.load(gameId, userId);
+    const oppId =
+      game.match.aUserId === userId ? game.match.bUserId : game.match.aUserId;
+    return {
+      oppOnline: this.presence.status(oppId).online,
+      oppHere: this.presence.isInRoom(oppId, `dm:${game.matchId}`),
     };
   }
 
   async move(gameId: string, userId: string, index: number) {
     const game = await this.load(gameId, userId);
-    if (game.status !== "open") throw new BadRequestException("Game is over — rematch to play again");
+    if (game.status !== "open")
+      throw new BadRequestException("Game is over — rematch to play again");
     const mark = game.match.aUserId === userId ? "X" : "O";
     if (game.turn !== mark) throw new BadRequestException("Not your turn");
-    if (!Number.isInteger(index) || index < 0 || index > 8 || game.board[index] !== ".") {
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index > 8 ||
+      game.board[index] !== "."
+    ) {
       throw new BadRequestException("Illegal move");
     }
-    const board = game.board.slice(0, index) + mark + game.board.slice(index + 1);
+    const board =
+      game.board.slice(0, index) + mark + game.board.slice(index + 1);
     const winner = checkWinner(board);
     const status = winner ? "done" : board.includes(".") ? "open" : "draw";
     const updated = await this.prisma.game.update({

@@ -102,7 +102,9 @@ model RoomRequest {
   fromUserId String
   toUserId   String
   status     String   @default("pending") // pending | accepted | declined | cancelled
-  roomId     String?
+  roomId     String? // legacy (random/friend matches no longer create rooms)
+  matchId    String?
+  gameId     String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 

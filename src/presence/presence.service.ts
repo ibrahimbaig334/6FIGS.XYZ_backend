@@ -48,7 +48,10 @@ export class PresenceService {
 
   status(userId: string): Presence {
     const ts = this.lastSeen.get(userId);
-    return { online: this.users.has(userId), lastSeenAt: ts ? new Date(ts).toISOString() : null };
+    return {
+      online: this.users.has(userId),
+      lastSeenAt: ts ? new Date(ts).toISOString() : null,
+    };
   }
 
   /** Socket entered a chat scope (joinScope) — occupant of roomKey (`room:id` / `dm:id`). */
@@ -91,5 +94,10 @@ export class PresenceService {
   /** Distinct users currently inside a chat scope — the live room count. */
   countInRoom(roomKey: string): number {
     return this.rooms.get(roomKey)?.size ?? 0;
+  }
+
+  /** Is a specific user inside a chat scope right now? */
+  isInRoom(userId: string, roomKey: string): boolean {
+    return this.rooms.get(roomKey)?.has(userId) ?? false;
   }
 }

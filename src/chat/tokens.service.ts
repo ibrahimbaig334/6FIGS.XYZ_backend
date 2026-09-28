@@ -1,9 +1,14 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { CacheService } from "../common/cache.service";
+import {
+  COINGECKO_API,
+  TOKEN_CACHE_MS,
+  TOKEN_PENDING_MS,
+} from "../common/constants";
 
-export const TOKEN_TTL_MS = 5 * 60 * 1000;
-const PENDING_TTL_MS = 60 * 1000;
+export const TOKEN_TTL_MS = TOKEN_CACHE_MS;
+const PENDING_TTL_MS = TOKEN_PENDING_MS;
 
 export interface TokenCardData {
   status: "live" | "pending" | "stale" | "unknown";
@@ -17,13 +22,37 @@ export interface TokenCardData {
 }
 
 const SYMBOL_TO_ID: Record<string, string> = {
-  BTC: "bitcoin", ETH: "ethereum", SOL: "solana", USDC: "usd-coin", USDT: "tether",
-  DOGE: "dogecoin", ARB: "arbitrum", OP: "optimism", LINK: "chainlink", AVAX: "avalanche-2",
-  MATIC: "matic-network", POL: "matic-network", BNB: "binancecoin", XRP: "ripple", ADA: "cardano",
-  TRX: "tron", TON: "the-open-network", NEAR: "near", ATOM: "cosmos", INJ: "injective-protocol",
-  SUI: "sui", APT: "aptos", PEPE: "pepe", WIF: "dogwifcoin", BONK: "bonk",
-  JUP: "jupiter-exchange-solana", WBTC: "wrapped-bitcoin", STETH: "staked-ether",
-  DAI: "dai", UNI: "uniswap", AAVE: "aave",
+  BTC: "bitcoin",
+  ETH: "ethereum",
+  SOL: "solana",
+  USDC: "usd-coin",
+  USDT: "tether",
+  DOGE: "dogecoin",
+  ARB: "arbitrum",
+  OP: "optimism",
+  LINK: "chainlink",
+  AVAX: "avalanche-2",
+  MATIC: "matic-network",
+  POL: "matic-network",
+  BNB: "binancecoin",
+  XRP: "ripple",
+  ADA: "cardano",
+  TRX: "tron",
+  TON: "the-open-network",
+  NEAR: "near",
+  ATOM: "cosmos",
+  INJ: "injective-protocol",
+  SUI: "sui",
+  APT: "aptos",
+  PEPE: "pepe",
+  WIF: "dogwifcoin",
+  BONK: "bonk",
+  JUP: "jupiter-exchange-solana",
+  WBTC: "wrapped-bitcoin",
+  STETH: "staked-ether",
+  DAI: "dai",
+  UNI: "uniswap",
+  AAVE: "aave",
 };
 
 /**
@@ -43,19 +72,26 @@ export class TokensService {
   ) {}
 
   private headers(): Record<string, string> {
-    const key = process.env.COINGECKO_API_KEY;
+    const key = (process.env.COINGECKO_API_KEY ?? "").trim();
     return key ? { "x-cg-demo-api-key": key } : {};
   }
 
   private async resolveId(sym: string): Promise<string | null> {
     if (SYMBOL_TO_ID[sym]) return SYMBOL_TO_ID[sym];
     try {
-      const res = await fetch(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(sym)}`, {
-        headers: this.headers(),
-      });
+      const res = await fetch(
+        `${COINGECKO_API}/search?query=${encodeURIComponent(sym)}`,
+        {
+          headers: this.headers(),
+        },
+      );
       if (!res.ok) return null;
-      const data = (await res.json()) as { coins?: { id: string; symbol: string }[] };
-      const hit = data.coins?.find((c) => c.symbol?.toUpperCase() === sym) ?? data.coins?.[0];
+      const data = (await res.json()) as {
+        coins?: { id: string; symbol: string }[];
+      };
+      const hit =
+        data.coins?.find((c) => c.symbol?.toUpperCase() === sym) ??
+        data.coins?.[0];
       return hit?.id ?? null;
     } catch {
       return null;
@@ -66,11 +102,15 @@ export class TokensService {
    * Full card with 5-min cache (Redis L1 + Postgres L2). Only `live` rows
    * refresh the clock; failures fall back to the stale row when present.
    */
-  async getCard(symbol: string): Promise<{ card: TokenCardData; cached: boolean }> {
+  async getCard(
+    symbol: string,
+  ): Promise<{ card: TokenCardData; cached: boolean }> {
     const sym = symbol.toUpperCase().slice(0, 10);
     const mem = await this.cache.get<{ card: TokenCardData }>(`token:${sym}`);
     if (mem) return { card: mem.card, cached: true };
-    const row = await this.prisma.tokenCardCache.findUnique({ where: { symbol: sym } });
+    const row = await this.prisma.tokenCardCache.findUnique({
+      where: { symbol: sym },
+    });
     if (row && Date.now() - row.fetchedAt.getTime() < TOKEN_TTL_MS) {
       await this.cache.set(`token:${sym}`, { card: row.payload }, TOKEN_TTL_MS);
       return { card: row.payload as unknown as TokenCardData, cached: true };
@@ -87,7 +127,10 @@ export class TokensService {
     }
     if (live && live.status === "unknown") return { card: live, cached: false };
     if (row) {
-      const stale = { ...(row.payload as object), status: "stale" } as TokenCardData;
+      const stale = {
+        ...(row.payload as object),
+        status: "stale",
+      } as TokenCardData;
       await this.cache.set(`token:${sym}`, { card: stale }, PENDING_TTL_MS);
       return { card: stale, cached: true };
     }
@@ -108,7 +151,7 @@ export class TokensService {
     if (!id) return { status: "unknown", name: sym };
     try {
       const res = await fetch(
-        `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${encodeURIComponent(id)}&price_change_percentage=24h`,
+        `${COINGECKO_API}/coins/markets?vs_currency=usd&ids=${encodeURIComponent(id)}&price_change_percentage=24h`,
         { headers: this.headers() },
       );
       if (res.status === 429) {
@@ -136,7 +179,9 @@ export class TokensService {
         change24h: m.price_change_percentage_24h ?? null,
       };
     } catch (err) {
-      this.log.warn(`CoinGecko fetch failed for $${sym}: ${err instanceof Error ? err.message : err}`);
+      this.log.warn(
+        `CoinGecko fetch failed for $${sym}: ${err instanceof Error ? err.message : err}`,
+      );
       return null;
     }
   }

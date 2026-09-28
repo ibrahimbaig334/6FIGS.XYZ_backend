@@ -1,4 +1,14 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from "@nestjs/common";
 import { CurrentUser } from "../auth/current-user";
 import { JwtGuard } from "../auth/jwt.guard";
 import { PlayService } from "./play.service";
@@ -45,12 +55,29 @@ export class PlayController {
   }
 
   @Get("friends")
-  friends(@CurrentUser() userId: string, @Query("q") q?: string) {
-    return this.play.friends(userId, q);
+  friends(
+    @CurrentUser() userId: string,
+    @Query("q") q?: string,
+    @Query("sort") sort?: string,
+    @Query("order") order?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.play.friends(
+      userId,
+      q,
+      sort,
+      order,
+      page ? Number(page) : undefined,
+      limit ? Number(limit) : undefined,
+    );
   }
 
   @Post("request")
-  async request(@CurrentUser() userId: string, @Body() body: { userId?: unknown }) {
+  async request(
+    @CurrentUser() userId: string,
+    @Body() body: { userId?: unknown },
+  ) {
     if (typeof body.userId !== "string" || !body.userId) {
       throw new BadRequestException("userId required");
     }
@@ -77,21 +104,28 @@ export class PlayController {
   @Post("requests/:id/accept")
   async accept(@CurrentUser() userId: string, @Param("id") id: string) {
     const req = await this.play.accept(userId, id);
-    this.gateway.notifyUser(req.fromUserId, "requestAccepted", { requestId: req.id, roomId: req.roomId });
+    this.gateway.notifyUser(req.fromUserId, "requestAccepted", {
+      requestId: req.id,
+      gameId: req.gameId,
+    });
     return req;
   }
 
   @Post("requests/:id/decline")
   async decline(@CurrentUser() userId: string, @Param("id") id: string) {
     const req = await this.play.decline(userId, id);
-    this.gateway.notifyUser(req.fromUserId, "requestDeclined", { requestId: req.id });
+    this.gateway.notifyUser(req.fromUserId, "requestDeclined", {
+      requestId: req.id,
+    });
     return req;
   }
 
   @Post("requests/:id/cancel")
   async cancel(@CurrentUser() userId: string, @Param("id") id: string) {
     const req = await this.play.cancel(userId, id);
-    this.gateway.notifyUser(req.toUserId, "requestCancelled", { requestId: req.id });
+    this.gateway.notifyUser(req.toUserId, "requestCancelled", {
+      requestId: req.id,
+    });
     return req;
   }
 }

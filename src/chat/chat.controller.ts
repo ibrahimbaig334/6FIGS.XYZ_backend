@@ -21,6 +21,12 @@ export class ChatController {
     @Query("cursor") cursor?: string,
     @Query("limit") limit?: string,
   ) {
-    return this.chat.history(userId, scope, id, cursor, limit ? Number(limit) : undefined);
+    return this.chat.history(
+      userId,
+      scope,
+      id,
+      cursor,
+      limit ? Number(limit) : undefined,
+    );
   }
 }

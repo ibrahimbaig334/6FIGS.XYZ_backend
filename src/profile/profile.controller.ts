@@ -14,7 +14,10 @@ export class ProfileController {
   }
 
   @Patch("user")
-  update(@CurrentUser() userId: string, @Body() body: { handle?: unknown; visMode?: unknown }) {
+  update(
+    @CurrentUser() userId: string,
+    @Body() body: { handle?: unknown; visMode?: unknown },
+  ) {
     return this.profile.update(userId, body);
   }
 }

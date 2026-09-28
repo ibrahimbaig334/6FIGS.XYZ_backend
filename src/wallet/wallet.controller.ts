@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+} from "@nestjs/common";
 import { AuthService } from "../auth/auth.service";
 import { CurrentUser } from "../auth/current-user";
 import { JwtGuard, AuthedRequest } from "../auth/jwt.guard";
@@ -13,23 +23,43 @@ export class WalletController {
 
   @Post("nonce")
   nonce(@Body() body: { chain?: string; address?: string }) {
-    return this.auth.nonceFor(String(body.chain ?? ""), String(body.address ?? ""));
+    return this.auth.nonceFor(
+      String(body.chain ?? ""),
+      String(body.address ?? ""),
+    );
   }
 
   @Post("verify")
-  verify(@Body() body: { chain?: string; address?: string; nonce?: string; signature?: string }) {
+  verify(
+    @Req() req: AuthedRequest,
+    @Body()
+    body: {
+      chain?: string;
+      address?: string;
+      nonce?: string;
+      signature?: string;
+    },
+  ) {
     return this.auth.verifyAndLogin(
       String(body.chain ?? ""),
       String(body.address ?? ""),
       String(body.nonce ?? ""),
       String(body.signature ?? ""),
+      this.auth.userIdFromHeader(req.headers.authorization),
     );
   }
 
   @Post("link")
-  link(@Req() req: AuthedRequest, @Body() body: { chain?: string; address?: string }) {
+  link(
+    @Req() req: AuthedRequest,
+    @Body() body: { chain?: string; address?: string },
+  ) {
     const userId = this.auth.userIdFromHeader(req.headers.authorization);
-    return this.auth.linkWallet(userId, String(body.chain ?? ""), String(body.address ?? ""));
+    return this.auth.linkWallet(
+      userId,
+      String(body.chain ?? ""),
+      String(body.address ?? ""),
+    );
   }
 
   @Get("user")
@@ -40,7 +70,11 @@ export class WalletController {
 
   @Patch(":id/mock")
   @UseGuards(JwtGuard)
-  setMock(@CurrentUser() userId: string, @Param("id") id: string, @Body() body: { value?: number }) {
+  setMock(
+    @CurrentUser() userId: string,
+    @Param("id") id: string,
+    @Body() body: { value?: number },
+  ) {
     return this.wallets.setMock(userId, id, Number(body.value));
   }
 

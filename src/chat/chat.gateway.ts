@@ -12,7 +12,9 @@ import { AuthService } from "../auth/auth.service";
 import { ChatService } from "./chat.service";
 import { PresenceService } from "../presence/presence.service";
 
-@WebSocketGateway({ cors: { origin: process.env.WEB_ORIGIN ?? "http://localhost:3000" } })
+@WebSocketGateway({
+  cors: { origin: process.env.WEB_ORIGIN ?? "http://localhost:3000" },
+})
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
 
@@ -40,14 +42,28 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage("joinScope")
-  async join(@MessageBody() body: { scope?: unknown; scopeId?: unknown }, @ConnectedSocket() socket: Socket) {
-    if ((body.scope !== "dm" && body.scope !== "room") || typeof body.scopeId !== "string") {
+  async join(
+    @MessageBody() body: { scope?: unknown; scopeId?: unknown },
+    @ConnectedSocket() socket: Socket,
+  ) {
+    if (
+      (body.scope !== "dm" && body.scope !== "room") ||
+      typeof body.scopeId !== "string"
+    ) {
       return { error: "scope (dm|room) + scopeId required" };
     }
     try {
-      await this.chat.assertScopeAccess(socket.data.userId as string, body.scope, body.scopeId);
+      await this.chat.assertScopeAccess(
+        socket.data.userId as string,
+        body.scope,
+        body.scopeId,
+      );
       await socket.join(`${body.scope}:${body.scopeId}`);
-      this.presence.trackJoin(socket.id, socket.data.userId as string, `${body.scope}:${body.scopeId}`);
+      this.presence.trackJoin(
+        socket.id,
+        socket.data.userId as string,
+        `${body.scope}:${body.scopeId}`,
+      );
       return { ok: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : "join failed" };
@@ -55,8 +71,14 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage("leaveScope")
-  async leave(@MessageBody() body: { scope?: unknown; scopeId?: unknown }, @ConnectedSocket() socket: Socket) {
-    if ((body.scope !== "dm" && body.scope !== "room") || typeof body.scopeId !== "string") {
+  async leave(
+    @MessageBody() body: { scope?: unknown; scopeId?: unknown },
+    @ConnectedSocket() socket: Socket,
+  ) {
+    if (
+      (body.scope !== "dm" && body.scope !== "room") ||
+      typeof body.scopeId !== "string"
+    ) {
       return { error: "scope (dm|room) + scopeId required" };
     }
     await socket.leave(`${body.scope}:${body.scopeId}`);
@@ -69,12 +91,23 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() body: { scope?: unknown; scopeId?: unknown; body?: unknown },
     @ConnectedSocket() socket: Socket,
   ) {
-    if ((body.scope !== "dm" && body.scope !== "room") || typeof body.scopeId !== "string" || typeof body.body !== "string") {
+    if (
+      (body.scope !== "dm" && body.scope !== "room") ||
+      typeof body.scopeId !== "string" ||
+      typeof body.body !== "string"
+    ) {
       return { error: "scope + scopeId + body required" };
     }
     try {
-      const posted = await this.chat.post(socket.data.userId as string, body.scope, body.scopeId, body.body);
-      this.server.to(`${body.scope}:${body.scopeId}`).emit("chatMessage", posted);
+      const posted = await this.chat.post(
+        socket.data.userId as string,
+        body.scope,
+        body.scopeId,
+        body.body,
+      );
+      this.server
+        .to(`${body.scope}:${body.scopeId}`)
+        .emit("chatMessage", posted);
       return { ok: true, ...posted };
     } catch (err) {
       return { error: err instanceof Error ? err.message : "send failed" };

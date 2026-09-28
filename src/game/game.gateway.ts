@@ -12,7 +12,9 @@ import { AuthService } from "../auth/auth.service";
 import { GameService } from "./game.service";
 import { PresenceService } from "../presence/presence.service";
 
-@WebSocketGateway({ cors: { origin: process.env.WEB_ORIGIN ?? "http://localhost:3000" } })
+@WebSocketGateway({
+  cors: { origin: process.env.WEB_ORIGIN ?? "http://localhost:3000" },
+})
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
 
@@ -40,10 +42,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage("joinGame")
-  async join(@MessageBody() body: { gameId?: unknown }, @ConnectedSocket() socket: Socket) {
+  async join(
+    @MessageBody() body: { gameId?: unknown },
+    @ConnectedSocket() socket: Socket,
+  ) {
     if (typeof body.gameId !== "string") return { error: "gameId required" };
     try {
-      const state = await this.games.get(body.gameId, socket.data.userId as string);
+      const state = await this.games.get(
+        body.gameId,
+        socket.data.userId as string,
+      );
       await socket.join(`game:${body.gameId}`);
       return { ok: true, state };
     } catch (err) {
@@ -52,10 +60,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage("makeMove")
-  async move(@MessageBody() body: { gameId?: unknown; index?: unknown }, @ConnectedSocket() socket: Socket) {
-    if (typeof body.gameId !== "string" || typeof body.index !== "number") return { error: "gameId + index required" };
+  async move(
+    @MessageBody() body: { gameId?: unknown; index?: unknown },
+    @ConnectedSocket() socket: Socket,
+  ) {
+    if (typeof body.gameId !== "string" || typeof body.index !== "number")
+      return { error: "gameId + index required" };
     try {
-      const state = await this.games.move(body.gameId, socket.data.userId as string, body.index);
+      const state = await this.games.move(
+        body.gameId,
+        socket.data.userId as string,
+        body.index,
+      );
       this.server.to(`game:${body.gameId}`).emit("gameState", state);
       return { ok: true, state };
     } catch (err) {
@@ -64,10 +80,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage("rematch")
-  async rematch(@MessageBody() body: { gameId?: unknown }, @ConnectedSocket() socket: Socket) {
+  async rematch(
+    @MessageBody() body: { gameId?: unknown },
+    @ConnectedSocket() socket: Socket,
+  ) {
     if (typeof body.gameId !== "string") return { error: "gameId required" };
     try {
-      const state = await this.games.rematch(body.gameId, socket.data.userId as string);
+      const state = await this.games.rematch(
+        body.gameId,
+        socket.data.userId as string,
+      );
       this.server.to(`game:${body.gameId}`).emit("gameState", state);
       return { ok: true, state };
     } catch (err) {

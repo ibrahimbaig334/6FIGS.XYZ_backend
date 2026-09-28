@@ -1,10 +1,12 @@
 // Tier thresholds are environment-aware (PRD §3):
 // prod = I > $100K · II > $500K · III > $1M; devnet uses very low tiers
 // because Sepolia-ETH / devnet-SOL faucet amounts are tiny.
+import { requiredEnv } from "./env";
+
 export type Tier = "TIER I" | "TIER II" | "TIER III";
 
 export function isDevnet(): boolean {
-  return (process.env.CHAIN_MODE ?? "devnet") === "devnet";
+  return requiredEnv("CHAIN_MODE") === "devnet";
 }
 
 export function tierThresholds(): Record<Tier, number> {

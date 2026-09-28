@@ -13,6 +13,12 @@ export class GameController {
     return this.games.get(id, userId);
   }
 
+  /** Cheap opponent-presence probe for the "opponent left" overlay (no DB trips). */
+  @Get(":id/live")
+  live(@CurrentUser() userId: string, @Param("id") id: string) {
+    return this.games.live(id, userId);
+  }
+
   @Post(":id/rematch")
   rematch(@CurrentUser() userId: string, @Param("id") id: string) {
     return this.games.rematch(id, userId);

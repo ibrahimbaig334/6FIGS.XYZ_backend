@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from "@nestjs/common";
 import Redis from "ioredis";
 
 /**
@@ -12,7 +17,8 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit(): Promise<void> {
     const url = process.env.REDIS_URL;
-    if (!url) throw new Error("REDIS_URL is not set — backend requires Redis to start");
+    if (!url)
+      throw new Error("REDIS_URL is not set — backend requires Redis to start");
     const client = new Redis(url, {
       lazyConnect: true,
       maxRetriesPerRequest: 2,
@@ -24,7 +30,9 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
       await client.ping();
     } catch (err) {
       client.disconnect();
-      throw new Error(`Redis unreachable — backend requires Redis to start: ${err instanceof Error ? err.message : err}`);
+      throw new Error(
+        `Redis unreachable — backend requires Redis to start: ${err instanceof Error ? err.message : err}`,
+      );
     }
     this.redis = client;
     this.log.log("Redis cache connected");
@@ -65,7 +73,13 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
   async delPrefix(prefix: string): Promise<void> {
     let cursor = "0";
     do {
-      const [next, keys] = await this.redis.scan(cursor, "MATCH", `${prefix}*`, "COUNT", 200);
+      const [next, keys] = await this.redis.scan(
+        cursor,
+        "MATCH",
+        `${prefix}*`,
+        "COUNT",
+        200,
+      );
       cursor = next;
       if (keys.length) await this.redis.del(...keys);
     } while (cursor !== "0");
