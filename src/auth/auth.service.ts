@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -10,7 +11,11 @@ import bs58 from "bs58";
 import { verifyAsync } from "@noble/ed25519";
 import jwt from "jsonwebtoken";
 import { PrismaService } from "../prisma/prisma.service";
-import { JWT_EXPIRES_IN, NONCE_TTL_MS } from "../common/constants";
+import {
+  JWT_EXPIRES_IN,
+  MAX_WALLETS_PER_USER,
+  NONCE_TTL_MS,
+} from "../common/constants";
 import { requiredEnv } from "../common/env";
 
 const CHAINS = ["EVM", "SOL"] as const;
@@ -137,11 +142,7 @@ export class AuthService {
     signature: string,
     userId: string | null = null,
   ) {
-    if (!CHAINS.includes(chain as Chain))
-      throw new BadRequestException("Unsupported chain");
-    const normalized = normalizeAddress(chain, address);
-    this.takeNonce(chain, normalized, nonce);
-    await this.verifySignature(chain, normalized, nonce, signature);
+    const normalized = await this.checkSignature(chain, address, nonce, signature);
     // Fresh address + logged-in session → attach as an additional wallet (multi-wallet).
     // Address owned by someone else → log in as the owner. New address, no session → new user.
     const hash = addressHash(chain, normalized);
@@ -157,6 +158,40 @@ export class AuthService {
       where: { id: wallet.userId },
     });
     return { token: this.issueToken(user.id), user: this.publicUser(user) };
+  }
+
+  /**
+   * Explicit add-wallet flow for logged-in sessions. Unlike verify it can NEVER
+   * create a new account or switch sessions: the address either attaches to
+   * YOUR account or is rejected as owned elsewhere.
+   */
+  async verifyAndAttach(
+    userId: string,
+    chain: string,
+    address: string,
+    nonce: string,
+    signature: string,
+  ) {
+    const normalized = await this.checkSignature(chain, address, nonce, signature);
+    const wallet = await this.findOrCreateWallet(userId, chain, normalized);
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: wallet.userId },
+    });
+    return { token: this.issueToken(user.id), user: this.publicUser(user) };
+  }
+
+  private async checkSignature(
+    chain: string,
+    address: string,
+    nonce: string,
+    signature: string,
+  ): Promise<string> {
+    if (!CHAINS.includes(chain as Chain))
+      throw new BadRequestException("Unsupported chain");
+    const normalized = normalizeAddress(chain, address);
+    this.takeNonce(chain, normalized, nonce);
+    await this.verifySignature(chain, normalized, nonce, signature);
+    return normalized;
   }
 
   /**
@@ -205,6 +240,12 @@ export class AuthService {
     if (!owner) {
       const user = await this.createUserWithHandle(normalized);
       owner = user.id;
+    }
+    const owned = await this.prisma.wallet.count({ where: { userId: owner } });
+    if (owned >= MAX_WALLETS_PER_USER) {
+      throw new ForbiddenException(
+        `Wallet limit reached (${MAX_WALLETS_PER_USER}) — remove one to add another`,
+      );
     }
     return this.prisma.wallet.create({
       data: {

@@ -220,6 +220,74 @@ function sock(token) {
     walletsB.data.length === 2,
     JSON.stringify(walletsB.data.map((x) => x.chain)),
   );
+  // Explicit add-wallet flow: fresh address attaches, repeats are idempotent,
+  // another user's address is rejected.
+  const w3 = new ethers.Wallet("0x" + "33".repeat(32));
+  const n3 = (
+    await req("POST", "/wallet/nonce", {
+      body: { chain: "EVM", address: w3.address },
+    })
+  ).data.nonce;
+  const s3 = await w3.signMessage(msg("EVM", w3.address.toLowerCase(), n3));
+  const ad1 = await req("POST", "/wallet/add", {
+    token: B.token,
+    body: { chain: "EVM", address: w3.address, nonce: n3, signature: s3 },
+  });
+  check(
+    "POST /wallet/add attaches",
+    ok2xx(ad1.status) && ad1.data.user.id === B.userId,
+    JSON.stringify(ad1.data),
+  );
+  const n3b = (
+    await req("POST", "/wallet/nonce", {
+      body: { chain: "EVM", address: w3.address },
+    })
+  ).data.nonce;
+  const s3b = await w3.signMessage(msg("EVM", w3.address.toLowerCase(), n3b));
+  const ad2 = await req("POST", "/wallet/add", {
+    token: B.token,
+    body: { chain: "EVM", address: w3.address, nonce: n3b, signature: s3b },
+  });
+  check("POST /wallet/add idempotent", ok2xx(ad2.status), ad2.status);
+  const nA = (
+    await req("POST", "/wallet/nonce", {
+      body: { chain: "EVM", address: w.address },
+    })
+  ).data.nonce;
+  const sA2 = await w.signMessage(msg("EVM", w.address.toLowerCase(), nA));
+  const ad3 = await req("POST", "/wallet/add", {
+    token: B.token,
+    body: { chain: "EVM", address: w.address, nonce: nA, signature: sA2 },
+  });
+  check("POST /wallet/add another user's wallet 400", ad3.status === 400, ad3.status);
+  r = await req("POST", "/wallet/add", {
+    body: { chain: "EVM", address: w3.address, nonce: n3b, signature: s3b },
+  });
+  check("POST /wallet/add unauth 401", r.status === 401, r.status);
+  // 4-wallet cap: fresh user fills to 4, fifth is rejected.
+  const capAddrs = [
+    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "0x1111111111111111111111111111111111111111",
+    "0x3333333333333333333333333333333333333333",
+    "0x4444444444444444444444444444444444444444",
+  ];
+  let capToken = "";
+  for (const a of capAddrs) {
+    const lk = await req("POST", "/wallet/link", {
+      body: { chain: "EVM", address: a },
+    });
+    capToken = lk.data.token;
+  }
+  const capMe = await req("GET", "/wallet/user", { token: capToken });
+  check("cap user has 4 wallets", capMe.data.length === 4, capMe.data.length);
+  r = await req("POST", "/wallet/link", {
+    token: capToken,
+    body: {
+      chain: "EVM",
+      address: "0x5555555555555555555555555555555555555555",
+    },
+  });
+  check("fifth wallet 403", r.status === 403, r.status);
   const meA = await req("GET", "/wallet/user", { token: tokenA });
   await req("PATCH", `/wallet/${meA.data[0].id}/mock`, {
     token: tokenA,

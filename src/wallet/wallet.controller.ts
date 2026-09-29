@@ -49,6 +49,31 @@ export class WalletController {
     );
   }
 
+  /**
+   * Add-wallet flow for logged-in sessions. Can never create or switch
+   * accounts — the address attaches to YOUR account or is rejected.
+   */
+  @Post("add")
+  @UseGuards(JwtGuard)
+  add(
+    @CurrentUser() userId: string,
+    @Body()
+    body: {
+      chain?: string;
+      address?: string;
+      nonce?: string;
+      signature?: string;
+    },
+  ) {
+    return this.auth.verifyAndAttach(
+      userId,
+      String(body.chain ?? ""),
+      String(body.address ?? ""),
+      String(body.nonce ?? ""),
+      String(body.signature ?? ""),
+    );
+  }
+
   @Post("link")
   link(
     @Req() req: AuthedRequest,
