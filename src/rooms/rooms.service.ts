@@ -213,15 +213,13 @@ export class RoomsService {
       inviteCode?: unknown;
     },
   ) {
-    const name = String(body.name ?? "")
-      .trim()
-      .slice(0, ROOM_NAME_MAX);
+    // Code-point-safe truncation (never split an emoji surrogate pair).
+    const cpSlice = (s: string, n: number) => [...s].slice(0, n).join("");
+    const name = cpSlice(String(body.name ?? "").trim(), ROOM_NAME_MAX);
     if (name.length < ROOM_NAME_MIN)
       throw new BadRequestException("Room name needs 3+ chars");
-    const description =
-      String(body.description ?? "")
-        .trim()
-        .slice(0, ROOM_DESC_MAX) || null;
+    const description = cpSlice(String(body.description ?? "").trim(), ROOM_DESC_MAX);
+    if (!description) throw new BadRequestException("Description is required");
     const accessType = String(body.accessType ?? "");
     if (accessType !== "tier" && accessType !== "invite")
       throw new BadRequestException("accessType must be tier or invite");

@@ -39,7 +39,7 @@ export function tierRank(t: string | null | undefined): number {
 }
 
 export const VIS_MODES = ["HIDDEN", "CATEGORIES", "FULL"] as const;
-export const CHAINS = ["EVM", "SOL", "BTC"] as const;
+export const CHAINS = ["EVM", "SOL"] as const;
 
 export function shortAddr(a: string): string {
   return a.length > 18 ? a.slice(0, 8) + "…" + a.slice(-4) : a;

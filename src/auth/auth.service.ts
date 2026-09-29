@@ -6,14 +6,13 @@ import {
 import { createHash, randomBytes } from "crypto";
 import { ethers } from "ethers";
 import bs58 from "bs58";
-import btcMessage from "bitcoinjs-message";
 import { verifyAsync } from "@noble/ed25519";
 import jwt from "jsonwebtoken";
 import { PrismaService } from "../prisma/prisma.service";
 import { JWT_EXPIRES_IN, NONCE_TTL_MS } from "../common/constants";
 import { requiredEnv } from "../common/env";
 
-const CHAINS = ["EVM", "SOL", "BTC"] as const;
+const CHAINS = ["EVM", "SOL"] as const;
 export type Chain = (typeof CHAINS)[number];
 
 function isDevnet(): boolean {
@@ -47,16 +46,6 @@ export function normalizeAddress(chain: string, address: string): string {
     } catch {
       throw new BadRequestException("Invalid Solana address");
     }
-  }
-  if (chain === "BTC") {
-    if (!/^[A-Za-z0-9]{26,62}$/.test(a))
-      throw new BadRequestException("Invalid BTC address");
-    if (a.toLowerCase().startsWith("bc1p")) {
-      throw new BadRequestException(
-        "Taproot addresses cannot sign messages — use native segwit (bc1q)",
-      );
-    }
-    return a;
   }
   throw new BadRequestException("Unsupported chain");
 }
@@ -135,22 +124,6 @@ export class AuthService {
         ok = false;
       }
       if (!ok) throw new UnauthorizedException("Bad Solana signature");
-      return;
-    }
-    if (chain === "BTC") {
-      // Unisat/Xverse message signatures (base64). Taproot (bc1p) message
-      // signing is not standardized — those addresses are rejected at connect.
-      let ok = false;
-      try {
-        ok = btcMessage.verify(
-          loginMessage(chain, normalized, nonce),
-          normalized,
-          signature,
-        );
-      } catch {
-        ok = false;
-      }
-      if (!ok) throw new UnauthorizedException("Bad BTC signature");
       return;
     }
     throw new BadRequestException("Unsupported chain");

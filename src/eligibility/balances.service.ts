@@ -9,9 +9,9 @@ import { isDevnet } from "../common/tiers";
 
 /**
  * Live onchain balances → USD.
- * - EVM wallets: native balance on EVM_RPC_URL (default: PublicNode Sepolia) × cached ETH price.
- * - SOL wallets: native balance on SOL_RPC_URL (default: Solana devnet) × cached SOL price.
- * - BTC: not read onchain in v1 (devnet leaves BTC out entirely).
+ * - EVM wallets: native balance on EVM_RPC_URL × cached ETH price.
+ * - SOL wallets: native balance on SOL_RPC_URL × cached SOL price.
+ * - BTC is not supported in v1 (connect button disabled — coming later).
  * Native balances sit in Redis for 10 min, so repeated profile/eligibility reads
  * never touch an RPC twice per address per 10 min; prices come from TokensService's
  * shared 5-min cache — no extra CoinGecko calls. Balance and price lookups run in
