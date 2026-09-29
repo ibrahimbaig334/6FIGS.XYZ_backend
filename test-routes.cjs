@@ -196,6 +196,30 @@ function sock(token) {
     50,
   );
   check("D tier I (devnet)", D.elig.tier === "TIER I", JSON.stringify(D.elig));
+  // Multi-wallet attach proof: verifying a fresh address while logged in adds
+  // it to the SAME account (fixed key => idempotent across runs).
+  const w2 = new ethers.Wallet("0x" + "22".repeat(32));
+  const nn = (
+    await req("POST", "/wallet/nonce", {
+      body: { chain: "EVM", address: w2.address },
+    })
+  ).data.nonce;
+  const ss = await w2.signMessage(msg("EVM", w2.address.toLowerCase(), nn));
+  const vv = await req("POST", "/wallet/verify", {
+    token: B.token,
+    body: { chain: "EVM", address: w2.address, nonce: nn, signature: ss },
+  });
+  check(
+    "verify attaches second wallet",
+    ok2xx(vv.status) && vv.data.user.id === B.userId,
+    JSON.stringify(vv.data),
+  );
+  const walletsB = await req("GET", "/wallet/user", { token: B.token });
+  check(
+    "B has 2 wallets same account",
+    walletsB.data.length === 2,
+    JSON.stringify(walletsB.data.map((x) => x.chain)),
+  );
   const meA = await req("GET", "/wallet/user", { token: tokenA });
   await req("PATCH", `/wallet/${meA.data[0].id}/mock`, {
     token: tokenA,
@@ -315,7 +339,7 @@ function sock(token) {
   check("profile bad chars handle 400", r.status === 400, r.status);
   r = await req("PATCH", "/profile/user", {
     token: B.token,
-    body: { handle: "tester_two", visMode: "CATEGORIES" },
+    body: { handle: "tester_two", visMode: "VISIBLE" },
   });
   check(
     "profile valid update 200",
@@ -885,6 +909,25 @@ function sock(token) {
     "C has no friends",
     r.status === 200 && r.data.items.length === 0,
     JSON.stringify(r.data),
+  );
+  r = await req("PATCH", "/profile/user", {
+    token: B.token,
+    body: { visMode: "VISIBLE" },
+  });
+  check("B sets VISIBLE", r.status === 200, r.status);
+  r = await req("GET", "/play/friends", { token: tokenA });
+  const bf = r.data.items.find((f) => f.id === B.userId);
+  check(
+    "VISIBLE friend shows assetPct",
+    !!bf && bf.assetPct !== null && typeof bf.assetPct === "object",
+    JSON.stringify(bf),
+  );
+  r = await req("GET", "/play/friends", { token: B.token });
+  const af = r.data.items.find((f) => f.id === userA);
+  check(
+    "HIDDEN friend hides assetPct",
+    !!af && af.assetPct === null,
+    JSON.stringify(af),
   );
   r = await req("GET", "/play/friends?sort=name&order=asc&limit=1&page=1", {
     token: tokenA,

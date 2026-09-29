@@ -63,7 +63,7 @@ export class ProfileService {
     if (body.visMode !== undefined) {
       if (!VIS_MODES.includes(body.visMode as (typeof VIS_MODES)[number])) {
         throw new BadRequestException(
-          "visMode must be HIDDEN, CATEGORIES or FULL",
+          "visMode must be HIDDEN or VISIBLE",
         );
       }
       data.visMode = String(body.visMode);

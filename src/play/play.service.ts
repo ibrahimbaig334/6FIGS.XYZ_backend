@@ -278,6 +278,12 @@ export class PlayService {
       this.prisma.eligibilityCache.findMany({ where: { userId: { in: ids } } }),
     ]);
     const tierBy = new Map(caches.map((c) => [c.userId, c.tier]));
+    const pctBy = new Map(
+      caches.map((c) => [
+        c.userId,
+        (c.assetPct ?? {}) as unknown as Record<string, number>,
+      ]),
+    );
     const query = (q ?? "").toLowerCase();
     const sortKey = sort === "name" || sort === "online" ? sort : "created";
     const dir = order === "asc" ? 1 : -1;
@@ -285,6 +291,8 @@ export class PlayService {
       .filter((u) => !query || (u.handle ?? "").toLowerCase().includes(query))
       .map((u) => ({
         ...this.pubUser(u, tierBy.get(u.id) ?? null),
+        // Holdings % are visible to friends only when the friend chose VISIBLE.
+        assetPct: u.visMode === "VISIBLE" ? (pctBy.get(u.id) ?? null) : null,
         _created: createdBy.get(u.id)?.getTime() ?? 0,
       }));
     list.sort((a, b) => {
@@ -313,6 +321,7 @@ export class PlayService {
       tags: f.tags,
       online: f.online,
       lastSeenAt: f.lastSeenAt,
+      assetPct: f.assetPct,
     }));
     return { items, total, page: pg, limit: lim };
   }

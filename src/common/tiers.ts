@@ -38,7 +38,7 @@ export function tierRank(t: string | null | undefined): number {
   return 0;
 }
 
-export const VIS_MODES = ["HIDDEN", "CATEGORIES", "FULL"] as const;
+export const VIS_MODES = ["HIDDEN", "VISIBLE"] as const;
 export const CHAINS = ["EVM", "SOL"] as const;
 
 export function shortAddr(a: string): string {

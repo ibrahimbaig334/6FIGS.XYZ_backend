@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import { createHash, randomBytes } from "crypto";
+import { Prisma } from "@prisma/client";
 import { ethers } from "ethers";
 import bs58 from "bs58";
 import { verifyAsync } from "@noble/ed25519";
@@ -202,7 +203,7 @@ export class AuthService {
     }
     let owner = userId;
     if (!owner) {
-      const user = await this.prisma.user.create({ data: {} });
+      const user = await this.createUserWithHandle(normalized);
       owner = user.id;
     }
     return this.prisma.wallet.create({
@@ -220,6 +221,40 @@ export class AuthService {
   issueToken(userId: string): string {
     return jwt.sign({ sub: userId }, jwtSecret(), {
       expiresIn: JWT_EXPIRES_IN,
+    });
+  }
+
+  /**
+   * Default username: user_<4 random letters>_<last 4 of wallet address>
+   * (e.g. user_egdd_dskf). Assigned once at account creation; the user can
+   * replace it with their own handle in settings.
+   */
+  private handleFor(address: string): string {
+    const rand = Array.from({ length: 4 }, () =>
+      String.fromCharCode(97 + Math.floor(Math.random() * 26)),
+    ).join("");
+    const suffix = address.toLowerCase().slice(-4);
+    return `user_${rand}_${suffix}`;
+  }
+
+  private async createUserWithHandle(address: string) {
+    for (let i = 0; i < 5; i++) {
+      try {
+        return await this.prisma.user.create({
+          data: { handle: this.handleFor(address) },
+        });
+      } catch (e) {
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === "P2002"
+        ) {
+          continue; // handle collision — roll again
+        }
+        throw e;
+      }
+    }
+    return this.prisma.user.create({
+      data: { handle: `user_${randomBytes(3).toString("hex")}` },
     });
   }
 
