@@ -327,6 +327,15 @@ function sock(token) {
     body: { handle: "tester_two" },
   });
   check("profile dup handle 409", r.status === 409, r.status);
+  r = await req("PATCH", "/profile/user", {
+    token: D.token,
+    body: { handle: "degodude" },
+  });
+  check(
+    "D sets handle",
+    r.status === 200 && r.data.handle === "degodude",
+    r.status,
+  );
 
   r = await req("GET", "/play/online?filter=TIER I", { token: tokenA });
   check(
@@ -488,6 +497,12 @@ function sock(token) {
     ),
     "",
   );
+  const ownT3 = list.data.items.find((x) => x.id === t3.data.id);
+  check(
+    "list creatorHandle falls back to generated",
+    !!ownT3 && /^user_[a-z0-9]{4}$/.test(ownT3.creatorHandle),
+    JSON.stringify(ownT3),
+  );
   check(
     "room list onlineCount is live number",
     list.data.items.every((x) => typeof x.onlineCount === "number"),
@@ -646,6 +661,11 @@ function sock(token) {
   check(
     "memberCount drops to 1",
     r.status === 200 && r.data.memberCount === 1,
+    JSON.stringify(r.data),
+  );
+  check(
+    "meta creatorHandle uses owner handle",
+    r.data.creatorHandle === "degodude",
     JSON.stringify(r.data),
   );
   r = await req("DELETE", `/rooms/${lab.data.id}`, { token: B.token });

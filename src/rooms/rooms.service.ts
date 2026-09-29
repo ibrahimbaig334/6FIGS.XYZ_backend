@@ -45,6 +45,7 @@ interface RoomListItem {
   createdAt: Date;
   isMember: boolean;
   isOwner: boolean;
+  creatorHandle: string;
 }
 
 interface RoomListOut {
@@ -132,7 +133,7 @@ export class RoomsService {
     },
     cacheKey: string,
   ): Promise<RoomListOut> {
-    const [allRooms, mine, ownedCount] = await Promise.all([
+    const [allRooms, mine, ownedCount, creators] = await Promise.all([
       this.prisma.room.findMany({
         include: { _count: { select: { members: true } } },
       }),
@@ -141,8 +142,12 @@ export class RoomsService {
         select: { roomId: true },
       }),
       this.prisma.room.count({ where: { createdBy: userId } }),
+      this.prisma.user.findMany({ select: { id: true, handle: true } }),
     ]);
     const mySet = new Set(mine.map((m) => m.roomId));
+    const handleBy = new Map(
+      creators.map((u) => [u.id, u.handle ?? `user_${u.id.slice(-4)}`]),
+    );
     let rooms = allRooms;
     if (q.access) rooms = rooms.filter((r) => r.accessType === q.access);
     if (q.q)
@@ -190,6 +195,7 @@ export class RoomsService {
         createdAt: r.createdAt,
         isMember: mySet.has(r.id),
         isOwner: r.createdBy === userId,
+        creatorHandle: handleBy.get(r.createdBy) ?? "unknown",
       }));
     const out: RoomListOut = {
       items,
@@ -415,6 +421,10 @@ export class RoomsService {
       this.prisma.roomMember.count({ where: { roomId } }),
     ]);
     if (!room) throw new NotFoundException("Room not found");
+    const creator = await this.prisma.user.findUnique({
+      where: { id: room.createdBy },
+      select: { id: true, handle: true },
+    });
     return {
       id: room.id,
       name: room.name,
@@ -426,6 +436,7 @@ export class RoomsService {
       onlineCount: this.presence.countInRoom(`room:${roomId}`),
       isMember: !!member,
       isOwner: room.createdBy === userId,
+      creatorHandle: creator?.handle ?? `user_${room.createdBy.slice(-4)}`,
     };
   }
 
