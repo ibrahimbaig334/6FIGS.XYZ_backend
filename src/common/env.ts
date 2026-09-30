@@ -22,7 +22,6 @@ const REQUIRED = [
   "DATABASE_URL",
   "JWT_SECRET",
   "REDIS_URL",
-  "EVM_RPC_URL",
   "SOL_RPC_URL",
   "CHAIN_MODE",
 ];

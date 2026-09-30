@@ -1,6 +1,8 @@
 /* Exhaustive backend route + validation tests. Requires: server on :4000, seeded DB.
- * Devnet tiers: I > $10 · II > $100 · III > $1,000 (mockUsd test hook drives tiers). */
-const { ethers } = require("ethers");
+ * Devnet tiers: I > $10 · II > $100 · III > $1,000 (mockUsd test hook drives tiers).
+ * SOL-only build: signatures via @noble/ed25519 + bs58 (backend's own stack). */
+const ed = require("@noble/ed25519");
+const bs58 = require("bs58");
 const { io } = require("../frontend/node_modules/socket.io-client");
 const fs = require("fs");
 const path = require("path");
@@ -49,6 +51,11 @@ async function req(method, path, { token, body } = {}) {
 const msg = (c, a, n) => `6FIGS.XYZ login\n${c}:${a}\nnonce: ${n}`;
 const ok2xx = (s) => s === 200 || s === 201;
 const emit = (s, ev, d) => new Promise((res) => s.emit(ev, d, res));
+// Deterministic SOL identities (stable across runs => idempotent suite).
+const solSeed = (b) => Buffer.alloc(32, b);
+const solAddr = async (seed) => bs58.encode(await ed.getPublicKeyAsync(seed));
+const solSig = async (seed, message) =>
+  bs58.encode(await ed.signAsync(new TextEncoder().encode(message), seed));
 function sock(token) {
   return new Promise((resolve, reject) => {
     const s = io(BASE, { auth: { token } });
@@ -80,9 +87,9 @@ function sock(token) {
   r = await req("POST", "/wallet/nonce", { body: {} });
   check("nonce missing params 400", r.status === 400, r.status);
   r = await req("POST", "/wallet/nonce", {
-    body: { chain: "EVM", address: "nope" },
+    body: { chain: "SOL", address: "nope" },
   });
-  check("nonce bad EVM addr 400", r.status === 400, r.status);
+  check("nonce bad SOL addr 400", r.status === 400, r.status);
   r = await req("POST", "/wallet/nonce", {
     body: { chain: "DOGE", address: "x" },
   });
@@ -92,54 +99,55 @@ function sock(token) {
   });
   check("nonce BTC unsupported 400", r.status === 400, r.status);
 
-  // Real EVM signature flow (nonces are single-use: fresh nonce per attempt)
-  const w = ethers.Wallet.createRandom();
+  // Real SOL signature flow (nonces are single-use: fresh nonce per attempt)
+  const seedA = solSeed(0xa1);
+  const addrA = await solAddr(seedA);
   const freshNonce = async () =>
     (
       await req("POST", "/wallet/nonce", {
-        body: { chain: "EVM", address: w.address },
+        body: { chain: "SOL", address: addrA },
       })
     ).data.nonce;
   r = await req("POST", "/wallet/nonce", {
-    body: { chain: "EVM", address: w.address },
+    body: { chain: "SOL", address: addrA },
   });
   check("nonce ok 2xx", ok2xx(r.status) && !!r.data.nonce, r.status);
   const n1 = r.data.nonce;
-  await w.signMessage(msg("EVM", w.address.toLowerCase(), n1));
+  await solSig(seedA, msg("SOL", addrA, n1));
   r = await req("POST", "/wallet/verify", {
-    body: { chain: "EVM", address: w.address, nonce: n1, signature: "0xdead" },
+    body: { chain: "SOL", address: addrA, nonce: n1, signature: "!!!not-base58!!!" },
   });
   check("verify malformed sig 401", r.status === 401, r.status);
   const n2 = await freshNonce();
-  const sig2 = await w.signMessage(msg("EVM", w.address.toLowerCase(), n2));
+  const sig2 = await solSig(seedA, msg("SOL", addrA, n2));
   r = await req("POST", "/wallet/verify", {
-    body: { chain: "EVM", address: w.address, nonce: "bad", signature: sig2 },
+    body: { chain: "SOL", address: addrA, nonce: "bad", signature: sig2 },
   });
   check("verify wrong nonce 401", r.status === 401, r.status);
   const n3 = await freshNonce();
-  const sig3 = await w.signMessage(msg("EVM", w.address.toLowerCase(), n3));
+  const sig3 = await solSig(seedA, msg("SOL", addrA, n3));
   r = await req("POST", "/wallet/verify", {
-    body: { chain: "EVM", address: w.address, nonce: n3, signature: sig3 },
+    body: { chain: "SOL", address: addrA, nonce: n3, signature: sig3 },
   });
   check("verify real sig 2xx", ok2xx(r.status) && !!r.data.token, r.status);
   const tokenA = r.data.token;
   const userA = r.data.user.id;
   r = await req("POST", "/wallet/verify", {
-    body: { chain: "EVM", address: w.address, nonce: n3, signature: sig3 },
+    body: { chain: "SOL", address: addrA, nonce: n3, signature: sig3 },
   });
   check("verify replay nonce 401", r.status === 401, r.status);
 
   // SOL bad sigs (mock-signature path removed)
-  const solAddr = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+  const badSolAddr = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
   const solNonce1 = (
     await req("POST", "/wallet/nonce", {
-      body: { chain: "SOL", address: solAddr },
+      body: { chain: "SOL", address: badSolAddr },
     })
   ).data.nonce;
   r = await req("POST", "/wallet/verify", {
     body: {
       chain: "SOL",
-      address: solAddr,
+      address: badSolAddr,
       nonce: solNonce1,
       signature: "!!!not-base58!!!",
     },
@@ -147,20 +155,20 @@ function sock(token) {
   check("verify bad SOL sig 401", r.status === 401, r.status);
   const solNonce2 = (
     await req("POST", "/wallet/nonce", {
-      body: { chain: "SOL", address: solAddr },
+      body: { chain: "SOL", address: badSolAddr },
     })
   ).data.nonce;
   r = await req("POST", "/wallet/verify", {
     body: {
       chain: "SOL",
-      address: solAddr,
+      address: badSolAddr,
       nonce: solNonce2,
       signature: "3yMApq",
     },
   });
   check("verify short SOL sig 401", r.status === 401, r.status);
 
-  // Users: A EVM 200k→III, B SOL 600k→III, C EVM 0→none, D EVM 50→I
+  // Users: A SOL 200k→III, B SOL 600k→III, C SOL 0→none, D SOL 50→I
   async function mockUser(chain, address, mock) {
     const link = await req("POST", "/wallet/link", {
       body: { chain, address },
@@ -184,30 +192,25 @@ function sock(token) {
     B.elig.tier === "TIER III",
     JSON.stringify(B.elig),
   );
-  const C = await mockUser(
-    "EVM",
-    "0xcccccccccccccccccccccccccccccccccccccccc",
-    0,
-  );
+  const addrC = await solAddr(solSeed(0xcc));
+  const addrD = await solAddr(solSeed(0xdd));
+  const C = await mockUser("SOL", addrC, 0);
   check("C no tier", C.elig.tier === null, JSON.stringify(C.elig));
-  const D = await mockUser(
-    "EVM",
-    "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-    50,
-  );
+  const D = await mockUser("SOL", addrD, 50);
   check("D tier I (devnet)", D.elig.tier === "TIER I", JSON.stringify(D.elig));
   // Multi-wallet attach proof: verifying a fresh address while logged in adds
   // it to the SAME account (fixed key => idempotent across runs).
-  const w2 = new ethers.Wallet("0x" + "22".repeat(32));
+  const seedW2 = solSeed(0x22);
+  const addrW2 = await solAddr(seedW2);
   const nn = (
     await req("POST", "/wallet/nonce", {
-      body: { chain: "EVM", address: w2.address },
+      body: { chain: "SOL", address: addrW2 },
     })
   ).data.nonce;
-  const ss = await w2.signMessage(msg("EVM", w2.address.toLowerCase(), nn));
+  const ss = await solSig(seedW2, msg("SOL", addrW2, nn));
   const vv = await req("POST", "/wallet/verify", {
     token: B.token,
-    body: { chain: "EVM", address: w2.address, nonce: nn, signature: ss },
+    body: { chain: "SOL", address: addrW2, nonce: nn, signature: ss },
   });
   check(
     "verify attaches second wallet",
@@ -216,22 +219,23 @@ function sock(token) {
   );
   const walletsB = await req("GET", "/wallet/user", { token: B.token });
   check(
-    "B has 2 wallets same account",
-    walletsB.data.length === 2,
+    "B wallets accumulate on same account",
+    walletsB.data.length >= 2,
     JSON.stringify(walletsB.data.map((x) => x.chain)),
   );
   // Explicit add-wallet flow: fresh address attaches, repeats are idempotent,
   // another user's address is rejected.
-  const w3 = new ethers.Wallet("0x" + "33".repeat(32));
-  const n3 = (
+  const seedW3 = solSeed(0x33);
+  const addrW3 = await solAddr(seedW3);
+  const wn3 = (
     await req("POST", "/wallet/nonce", {
-      body: { chain: "EVM", address: w3.address },
+      body: { chain: "SOL", address: addrW3 },
     })
   ).data.nonce;
-  const s3 = await w3.signMessage(msg("EVM", w3.address.toLowerCase(), n3));
+  const ws3 = await solSig(seedW3, msg("SOL", addrW3, wn3));
   const ad1 = await req("POST", "/wallet/add", {
     token: B.token,
-    body: { chain: "EVM", address: w3.address, nonce: n3, signature: s3 },
+    body: { chain: "SOL", address: addrW3, nonce: wn3, signature: ws3 },
   });
   check(
     "POST /wallet/add attaches",
@@ -240,51 +244,51 @@ function sock(token) {
   );
   const n3b = (
     await req("POST", "/wallet/nonce", {
-      body: { chain: "EVM", address: w3.address },
+      body: { chain: "SOL", address: addrW3 },
     })
   ).data.nonce;
-  const s3b = await w3.signMessage(msg("EVM", w3.address.toLowerCase(), n3b));
+  const s3b = await solSig(seedW3, msg("SOL", addrW3, n3b));
   const ad2 = await req("POST", "/wallet/add", {
     token: B.token,
-    body: { chain: "EVM", address: w3.address, nonce: n3b, signature: s3b },
+    body: { chain: "SOL", address: addrW3, nonce: n3b, signature: s3b },
   });
   check("POST /wallet/add idempotent", ok2xx(ad2.status), ad2.status);
   const nA = (
     await req("POST", "/wallet/nonce", {
-      body: { chain: "EVM", address: w.address },
+      body: { chain: "SOL", address: addrA },
     })
   ).data.nonce;
-  const sA2 = await w.signMessage(msg("EVM", w.address.toLowerCase(), nA));
+  const sAx = await solSig(seedA, msg("SOL", addrA, nA));
   const ad3 = await req("POST", "/wallet/add", {
     token: B.token,
-    body: { chain: "EVM", address: w.address, nonce: nA, signature: sA2 },
+    body: { chain: "SOL", address: addrA, nonce: nA, signature: sAx },
   });
   check("POST /wallet/add another user's wallet 400", ad3.status === 400, ad3.status);
   r = await req("POST", "/wallet/add", {
-    body: { chain: "EVM", address: w3.address, nonce: n3b, signature: s3b },
+    body: { chain: "SOL", address: addrW3, nonce: n3b, signature: s3b },
   });
   check("POST /wallet/add unauth 401", r.status === 401, r.status);
-  // 4-wallet cap: fresh user fills to 4, fifth is rejected.
-  const capAddrs = [
-    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "0x1111111111111111111111111111111111111111",
-    "0x3333333333333333333333333333333333333333",
-    "0x4444444444444444444444444444444444444444",
-  ];
-  let capToken = "";
-  for (const a of capAddrs) {
-    const lk = await req("POST", "/wallet/link", {
-      body: { chain: "EVM", address: a },
+  // 4-wallet cap: first link mints the account, rest attach with its token.
+  const capAddrs = [];
+  for (const b of [0xaa, 0x11, 0x44, 0x55]) capAddrs.push(await solAddr(solSeed(b)));
+  const capAddr5 = await solAddr(solSeed(0x66));
+  const capFirst = await req("POST", "/wallet/link", {
+    body: { chain: "SOL", address: capAddrs[0] },
+  });
+  const capToken = capFirst.data.token;
+  for (const a of capAddrs.slice(1)) {
+    await req("POST", "/wallet/link", {
+      token: capToken,
+      body: { chain: "SOL", address: a },
     });
-    capToken = lk.data.token;
   }
   const capMe = await req("GET", "/wallet/user", { token: capToken });
   check("cap user has 4 wallets", capMe.data.length === 4, capMe.data.length);
   r = await req("POST", "/wallet/link", {
     token: capToken,
     body: {
-      chain: "EVM",
-      address: "0x5555555555555555555555555555555555555555",
+      chain: "SOL",
+      address: capAddr5,
     },
   });
   check("fifth wallet 403", r.status === 403, r.status);
@@ -306,10 +310,11 @@ function sock(token) {
   );
 
   // RPC balance cache: a real (unmocked) wallet populates bal:* in Redis (10-min reuse)
+  const addrE = await solAddr(solSeed(0xee));
   const linkE = await req("POST", "/wallet/link", {
     body: {
-      chain: "EVM",
-      address: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      chain: "SOL",
+      address: addrE,
     },
   });
   check("E links real wallet", !!linkE.data.token, linkE.status);
@@ -327,7 +332,7 @@ function sock(token) {
   });
   try {
     await redis.connect();
-    const keys = await redis.keys("bal:EVM:0xeeee*");
+    const keys = await redis.keys(`bal:SOL:${addrE}`);
     check(
       "RPC balance cached in Redis (fails only if RPC unreachable, e.g. VPN)",
       keys.length > 0,
@@ -343,11 +348,11 @@ function sock(token) {
   check("wallet/user bad token 401", r.status === 401, r.status);
   r = await req("POST", "/wallet/link", {
     token: B.token,
-    body: { chain: "EVM", address: w.address },
+    body: { chain: "SOL", address: addrA },
   });
   check("link wallet owned elsewhere 400", r.status === 400, r.status);
   r = await req("POST", "/wallet/link", {
-    body: { chain: "EVM", address: "0x123" },
+    body: { chain: "SOL", address: "0x123" },
   });
   check("link bad address 400", r.status === 400, r.status);
   r = await req("PATCH", `/wallet/${meA.data[0].id}/mock`, {
@@ -509,6 +514,12 @@ function sock(token) {
   );
 
   console.log("-- rooms (1v1, paginated) --");
+  // Self-clean: deterministic A reuses its account across runs — delete its
+  // prior rooms so the 3-room cap starts fresh (other users' rooms untouched).
+  const preList = await req("GET", "/rooms?sort=mine&limit=50", { token: tokenA });
+  for (const it of preList.data.items ?? []) {
+    await req("DELETE", `/rooms/${it.id}`, { token: tokenA });
+  }
   r = await req("POST", "/rooms", { token: tokenA, body: { name: "ab" } });
   check("room short name 400", r.status === 400, r.status);
   r = await req("POST", "/rooms", {
@@ -589,11 +600,11 @@ function sock(token) {
     ),
     "",
   );
-  const ownT3 = list.data.items.find((x) => x.id === t3.data.id);
+  const ownT3c = list.data.items.find((x) => x.id === t3.data.id);
   check(
     "list creatorHandle falls back to generated",
-    !!ownT3 && /^user_[a-z0-9]{4}$/.test(ownT3.creatorHandle),
-    JSON.stringify(ownT3),
+    !!ownT3c && /^user_[a-z]{4}_[a-z0-9]{4}$/.test(ownT3c.creatorHandle),
+    JSON.stringify(ownT3c),
   );
   check(
     "room list onlineCount is live number",
@@ -1089,6 +1100,8 @@ function sock(token) {
     ok2xx(rq3.status) && rq3.data.status === "pending",
     JSON.stringify(rq3.data),
   );
+  const roomsBefore = await req("GET", "/rooms?limit=50", { token: tokenA });
+  const idsBefore = new Set(roomsBefore.data.items.map((x) => x.id));
   const acc = await req("POST", `/play/requests/${rq3.data.id}/accept`, {
     token: B.token,
     body: {},
@@ -1116,7 +1129,7 @@ function sock(token) {
   r = await req("GET", "/rooms?limit=50", { token: tokenA });
   check(
     "accept created no listed room",
-    r.status === 200 && !r.data.items.some((x) => x.name.includes("×")),
+    r.status === 200 && r.data.items.every((x) => idsBefore.has(x.id)),
     JSON.stringify(r.data.items.map((x) => x.name)),
   );
   r = await req("GET", `/play/requests/${rq3.data.id}`, { token: tokenA });

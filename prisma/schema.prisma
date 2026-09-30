@@ -29,6 +29,7 @@ model Wallet {
   chain       String
   addressHash String    @unique
   addressEnc  String?
+  name        String? // wallet app label (e.g. Phantom) captured at connect
   mockUsd     Int?
   verifiedAt  DateTime?
 

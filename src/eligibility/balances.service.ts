@@ -1,5 +1,4 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { ethers } from "ethers";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { TokensService } from "../chat/tokens.service";
 import { CacheService } from "../common/cache.service";
@@ -8,10 +7,8 @@ import { requiredEnv } from "../common/env";
 import { isDevnet } from "../common/tiers";
 
 /**
- * Live onchain balances → USD.
- * - EVM wallets: native balance on EVM_RPC_URL × cached ETH price.
+ * Live onchain balances → USD (Solana only — EVM/BTC removed in the SOL-only build).
  * - SOL wallets: native balance on SOL_RPC_URL × cached SOL price.
- * - BTC is not supported in v1 (connect button disabled — coming later).
  * Native balances sit in Redis for 10 min, so repeated profile/eligibility reads
  * never touch an RPC twice per address per 10 min; prices come from TokensService's
  * shared 5-min cache — no extra CoinGecko calls. Balance and price lookups run in
@@ -27,11 +24,6 @@ export class BalancesService {
     private readonly tokens: TokensService,
     private readonly cache: CacheService,
   ) {}
-
-  /** Configured primary + public fallback: one dead RPC must never zero every balance. */
-  private evmUrls(): string[] {
-    return [requiredEnv("EVM_RPC_URL")];
-  }
 
   private sol(): Connection {
     if (!this.solConnection) {
@@ -50,13 +42,6 @@ export class BalancesService {
   ): Promise<number> {
     if (isDevnet() && mockUsd !== null && mockUsd !== undefined) return mockUsd;
     try {
-      if (chain === "EVM") {
-        const [eth, price] = await Promise.all([
-          this.evmNative(address),
-          this.tokens.getPrice("ETH"),
-        ]);
-        return price ? eth * price : 0;
-      }
       if (chain === "SOL") {
         const [sol, price] = await Promise.all([
           this.solNative(address),
@@ -91,21 +76,6 @@ export class BalancesService {
       /* cache write failure must not fail the lookup */
     }
     return native;
-  }
-
-  private evmNative(address: string): Promise<number> {
-    return this.cachedNative(`bal:EVM:${address}`, async () => {
-      let lastErr: unknown = null;
-      for (const url of this.evmUrls()) {
-        try {
-          const wei = await new ethers.JsonRpcProvider(url).getBalance(address);
-          return Number(ethers.formatEther(wei));
-        } catch (e) {
-          lastErr = e;
-        }
-      }
-      throw lastErr instanceof Error ? lastErr : new Error("EVM RPC failed");
-    });
   }
 
   private solNative(address: string): Promise<number> {

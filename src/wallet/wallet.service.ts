@@ -33,6 +33,7 @@ export class WalletService {
       return {
         id: w.id,
         chain: w.chain,
+        name: w.name,
         address,
         display: shortAddr(address),
         mockUsd: w.mockUsd,

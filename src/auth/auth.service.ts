@@ -6,7 +6,6 @@ import {
 } from "@nestjs/common";
 import { createHash, randomBytes } from "crypto";
 import { Prisma } from "@prisma/client";
-import { ethers } from "ethers";
 import bs58 from "bs58";
 import { verifyAsync } from "@noble/ed25519";
 import jwt from "jsonwebtoken";
@@ -18,7 +17,7 @@ import {
 } from "../common/constants";
 import { requiredEnv } from "../common/env";
 
-const CHAINS = ["EVM", "SOL"] as const;
+const CHAINS = ["SOL"] as const;
 export type Chain = (typeof CHAINS)[number];
 
 function isDevnet(): boolean {
@@ -39,11 +38,6 @@ export function loginMessage(
 
 export function normalizeAddress(chain: string, address: string): string {
   const a = address.trim();
-  if (chain === "EVM") {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(a))
-      throw new BadRequestException("Invalid EVM address");
-    return a.toLowerCase();
-  }
   if (chain === "SOL") {
     try {
       const raw = bs58.decode(a);
@@ -104,20 +98,6 @@ export class AuthService {
     nonce: string,
     signature: string,
   ): Promise<void> {
-    if (chain === "EVM") {
-      let recovered: string;
-      try {
-        recovered = ethers.verifyMessage(
-          loginMessage(chain, normalized, nonce),
-          signature,
-        );
-      } catch {
-        throw new UnauthorizedException("Malformed EVM signature");
-      }
-      if (recovered.toLowerCase() !== normalized.toLowerCase())
-        throw new UnauthorizedException("Bad EVM signature");
-      return;
-    }
     if (chain === "SOL") {
       let ok = false;
       try {
@@ -141,6 +121,7 @@ export class AuthService {
     nonce: string,
     signature: string,
     userId: string | null = null,
+    walletName: string | null = null,
   ) {
     const normalized = await this.checkSignature(chain, address, nonce, signature);
     // Fresh address + logged-in session → attach as an additional wallet (multi-wallet).
@@ -153,6 +134,7 @@ export class AuthService {
       existing ? existing.userId : userId,
       chain,
       normalized,
+      walletName,
     );
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: wallet.userId },
@@ -171,9 +153,20 @@ export class AuthService {
     address: string,
     nonce: string,
     signature: string,
+    walletName: string | null = null,
   ) {
-    const normalized = await this.checkSignature(chain, address, nonce, signature);
-    const wallet = await this.findOrCreateWallet(userId, chain, normalized);
+    const normalized = await this.checkSignature(
+      chain,
+      address,
+      nonce,
+      signature,
+    );
+    const wallet = await this.findOrCreateWallet(
+      userId,
+      chain,
+      normalized,
+      walletName,
+    );
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: wallet.userId },
     });
@@ -198,7 +191,12 @@ export class AuthService {
    * Address-link flow. In prod every chain must use the signed verify flow;
    * in devnet plain linking stays open as a test hook (no mock UI anymore).
    */
-  async linkWallet(userId: string | null, chain: string, address: string) {
+  async linkWallet(
+    userId: string | null,
+    chain: string,
+    address: string,
+    walletName: string | null = null,
+  ) {
     if (!CHAINS.includes(chain as Chain))
       throw new BadRequestException("Unsupported chain");
     if (!isDevnet()) {
@@ -207,7 +205,12 @@ export class AuthService {
       );
     }
     const normalized = normalizeAddress(chain, address);
-    const wallet = await this.findOrCreateWallet(userId, chain, normalized);
+    const wallet = await this.findOrCreateWallet(
+      userId,
+      chain,
+      normalized,
+      walletName,
+    );
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: wallet.userId },
     });
@@ -218,7 +221,12 @@ export class AuthService {
     userId: string | null,
     chain: string,
     normalized: string,
+    walletName: string | null = null,
   ) {
+    const name =
+      typeof walletName === "string" && walletName.trim()
+        ? walletName.trim().slice(0, 32)
+        : null;
     const hash = addressHash(chain, normalized);
     const existing = await this.prisma.wallet.findUnique({
       where: { addressHash: hash },
@@ -228,10 +236,13 @@ export class AuthService {
         throw new BadRequestException(
           "Wallet already linked to another account",
         );
-      if (!existing.verifiedAt) {
+      if (!existing.verifiedAt || (name && name !== existing.name)) {
         return this.prisma.wallet.update({
           where: { id: existing.id },
-          data: { verifiedAt: new Date() },
+          data: {
+            verifiedAt: new Date(),
+            ...(name ? { name } : {}),
+          },
         });
       }
       return existing;
@@ -254,6 +265,7 @@ export class AuthService {
         addressHash: hash,
         // NOTE: reversible placeholder until ZKP encryption lands (see SUMMARY.txt).
         addressEnc: Buffer.from(normalized, "utf8").toString("base64url"),
+        ...(name ? { name } : {}),
         verifiedAt: new Date(),
       },
     });

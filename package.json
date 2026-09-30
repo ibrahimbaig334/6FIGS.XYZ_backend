@@ -26,7 +26,6 @@
     "@prisma/client": "5.19.1",
     "@solana/web3.js": "1.95.3",
     "bs58": "5.0.0",
-    "ethers": "6.13.2",
     "ioredis": "5.3.2",
     "jsonwebtoken": "9.0.2",
     "reflect-metadata": "0.2.2",

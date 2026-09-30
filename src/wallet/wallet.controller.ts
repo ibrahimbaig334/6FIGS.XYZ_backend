@@ -38,6 +38,7 @@ export class WalletController {
       address?: string;
       nonce?: string;
       signature?: string;
+      walletName?: string;
     },
   ) {
     return this.auth.verifyAndLogin(
@@ -46,6 +47,7 @@ export class WalletController {
       String(body.nonce ?? ""),
       String(body.signature ?? ""),
       this.auth.userIdFromHeader(req.headers.authorization),
+      typeof body.walletName === "string" ? body.walletName : null,
     );
   }
 
@@ -63,6 +65,7 @@ export class WalletController {
       address?: string;
       nonce?: string;
       signature?: string;
+      walletName?: string;
     },
   ) {
     return this.auth.verifyAndAttach(
@@ -71,19 +74,21 @@ export class WalletController {
       String(body.address ?? ""),
       String(body.nonce ?? ""),
       String(body.signature ?? ""),
+      typeof body.walletName === "string" ? body.walletName : null,
     );
   }
 
   @Post("link")
   link(
     @Req() req: AuthedRequest,
-    @Body() body: { chain?: string; address?: string },
+    @Body() body: { chain?: string; address?: string; walletName?: string },
   ) {
     const userId = this.auth.userIdFromHeader(req.headers.authorization);
     return this.auth.linkWallet(
       userId,
       String(body.chain ?? ""),
       String(body.address ?? ""),
+      typeof body.walletName === "string" ? body.walletName : null,
     );
   }
 
