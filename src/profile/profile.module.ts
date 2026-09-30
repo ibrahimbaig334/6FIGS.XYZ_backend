@@ -8,5 +8,6 @@ import { ProfileService } from "./profile.service";
   imports: [AuthModule, EligibilityModule],
   controllers: [ProfileController],
   providers: [ProfileService],
+  exports: [ProfileService],
 })
 export class ProfileModule {}

@@ -12,6 +12,7 @@ import {
 import { AuthService } from "../auth/auth.service";
 import { CurrentUser } from "../auth/current-user";
 import { JwtGuard, AuthedRequest } from "../auth/jwt.guard";
+import { ProfileService } from "../profile/profile.service";
 import { WalletService } from "./wallet.service";
 
 @Controller("wallet")
@@ -19,6 +20,7 @@ export class WalletController {
   constructor(
     private readonly auth: AuthService,
     private readonly wallets: WalletService,
+    private readonly profile: ProfileService,
   ) {}
 
   @Post("nonce")
@@ -41,13 +43,15 @@ export class WalletController {
       walletName?: string;
     },
   ) {
-    return this.auth.verifyAndLogin(
-      String(body.chain ?? ""),
-      String(body.address ?? ""),
-      String(body.nonce ?? ""),
-      String(body.signature ?? ""),
-      this.auth.userIdFromHeader(req.headers.authorization),
-      typeof body.walletName === "string" ? body.walletName : null,
+    return this.withProfile(
+      this.auth.verifyAndLogin(
+        String(body.chain ?? ""),
+        String(body.address ?? ""),
+        String(body.nonce ?? ""),
+        String(body.signature ?? ""),
+        this.auth.userIdFromHeader(req.headers.authorization),
+        typeof body.walletName === "string" ? body.walletName : null,
+      ),
     );
   }
 
@@ -68,14 +72,27 @@ export class WalletController {
       walletName?: string;
     },
   ) {
-    return this.auth.verifyAndAttach(
-      userId,
-      String(body.chain ?? ""),
-      String(body.address ?? ""),
-      String(body.nonce ?? ""),
-      String(body.signature ?? ""),
-      typeof body.walletName === "string" ? body.walletName : null,
+    return this.withProfile(
+      this.auth.verifyAndAttach(
+        userId,
+        String(body.chain ?? ""),
+        String(body.address ?? ""),
+        String(body.nonce ?? ""),
+        String(body.signature ?? ""),
+        typeof body.walletName === "string" ? body.walletName : null,
+      ),
     );
+  }
+
+  /**
+   * Login responses carry the full profile (eligibility included) so the
+   * frontend can render the tier badge immediately — no follow-up
+   * /profile/user fetch in the connect critical path.
+   */
+  private async withProfile(p: Promise<{ token: string; user: { id: string } }>) {
+    const res = await p;
+    const profile = await this.profile.me(res.user.id);
+    return { ...res, profile };
   }
 
   @Post("link")
