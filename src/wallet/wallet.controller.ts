@@ -89,7 +89,9 @@ export class WalletController {
    * frontend can render the tier badge immediately — no follow-up
    * /profile/user fetch in the connect critical path.
    */
-  private async withProfile(p: Promise<{ token: string; user: { id: string } }>) {
+  private async withProfile(
+    p: Promise<{ token: string; user: { id: string } }>,
+  ) {
     const res = await p;
     const profile = await this.profile.me(res.user.id);
     return { ...res, profile };

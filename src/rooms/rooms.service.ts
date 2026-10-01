@@ -224,7 +224,10 @@ export class RoomsService {
     const name = cpSlice(String(body.name ?? "").trim(), ROOM_NAME_MAX);
     if (name.length < ROOM_NAME_MIN)
       throw new BadRequestException("Room name needs 3+ chars");
-    const description = cpSlice(String(body.description ?? "").trim(), ROOM_DESC_MAX);
+    const description = cpSlice(
+      String(body.description ?? "").trim(),
+      ROOM_DESC_MAX,
+    );
     if (!description) throw new BadRequestException("Description is required");
     const accessType = String(body.accessType ?? "");
     if (accessType !== "tier" && accessType !== "invite")

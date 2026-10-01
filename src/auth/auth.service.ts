@@ -123,7 +123,12 @@ export class AuthService {
     userId: string | null = null,
     walletName: string | null = null,
   ) {
-    const normalized = await this.checkSignature(chain, address, nonce, signature);
+    const normalized = await this.checkSignature(
+      chain,
+      address,
+      nonce,
+      signature,
+    );
     // Fresh address + logged-in session → attach as an additional wallet (multi-wallet).
     // Address owned by someone else → log in as the owner. New address, no session → new user.
     const hash = addressHash(chain, normalized);
