@@ -249,10 +249,7 @@ export class RoomsService {
       // Fallback (no Segmenter): code-point-safe slice, never split surrogates.
       return Array.from(s).slice(0, n).join("");
     };
-    const name = graphemeSlice(
-      String(body.name ?? "").trim(),
-      ROOM_NAME_MAX,
-    );
+    const name = graphemeSlice(String(body.name ?? "").trim(), ROOM_NAME_MAX);
     if (name.length < ROOM_NAME_MIN)
       throw new BadRequestException("Room name needs 3+ chars");
     const description = graphemeSlice(
