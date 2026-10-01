@@ -24,7 +24,7 @@ export const HANDLE_PATTERN = /^[a-zA-Z0-9_.]{3,24}$/;
 // Auth
 export const NONCE_TTL_MS = 10 * 60 * 1000;
 export const JWT_EXPIRES_IN = "7d";
-export const MAX_WALLETS_PER_USER = 4;
+export const MAX_WALLETS_PER_USER = 20;
 
 // Eligibility / balances
 export const ELIGIBILITY_TTL_MS = 24 * 3600 * 1000;

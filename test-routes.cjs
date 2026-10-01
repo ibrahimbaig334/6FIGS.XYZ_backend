@@ -95,7 +95,10 @@ function sock(token) {
   });
   check("nonce bad chain 400", r.status === 400, r.status);
   r = await req("POST", "/wallet/nonce", {
-    body: { chain: "BTC", address: "bc1qtest0000000000000000000000000000000000" },
+    body: {
+      chain: "BTC",
+      address: "bc1qtest0000000000000000000000000000000000",
+    },
   });
   check("nonce BTC unsupported 400", r.status === 400, r.status);
 
@@ -115,7 +118,12 @@ function sock(token) {
   const n1 = r.data.nonce;
   await solSig(seedA, msg("SOL", addrA, n1));
   r = await req("POST", "/wallet/verify", {
-    body: { chain: "SOL", address: addrA, nonce: n1, signature: "!!!not-base58!!!" },
+    body: {
+      chain: "SOL",
+      address: addrA,
+      nonce: n1,
+      signature: "!!!not-base58!!!",
+    },
   });
   check("verify malformed sig 401", r.status === 401, r.status);
   const n2 = await freshNonce();
@@ -263,15 +271,20 @@ function sock(token) {
     token: B.token,
     body: { chain: "SOL", address: addrA, nonce: nA, signature: sAx },
   });
-  check("POST /wallet/add another user's wallet 400", ad3.status === 400, ad3.status);
+  check(
+    "POST /wallet/add another user's wallet 400",
+    ad3.status === 400,
+    ad3.status,
+  );
   r = await req("POST", "/wallet/add", {
     body: { chain: "SOL", address: addrW3, nonce: n3b, signature: s3b },
   });
   check("POST /wallet/add unauth 401", r.status === 401, r.status);
-  // 4-wallet cap: first link mints the account, rest attach with its token.
+  // 20-wallet cap: first link mints the account, rest
+  // attach with its token. 21 attempts — however many exist from earlier runs,
+  // the account must stop at exactly 20 and the extra attempt must 403.
   const capAddrs = [];
-  for (const b of [0xaa, 0x11, 0x44, 0x55]) capAddrs.push(await solAddr(solSeed(b)));
-  const capAddr5 = await solAddr(solSeed(0x66));
+  for (let i = 0; i < 21; i++) capAddrs.push(await solAddr(solSeed(0xa0 + i)));
   const capFirst = await req("POST", "/wallet/link", {
     body: { chain: "SOL", address: capAddrs[0] },
   });
@@ -283,15 +296,12 @@ function sock(token) {
     });
   }
   const capMe = await req("GET", "/wallet/user", { token: capToken });
-  check("cap user has 4 wallets", capMe.data.length === 4, capMe.data.length);
+  check("cap user has 20 wallets", capMe.data.length === 20, capMe.data.length);
   r = await req("POST", "/wallet/link", {
     token: capToken,
-    body: {
-      chain: "SOL",
-      address: capAddr5,
-    },
+    body: { chain: "SOL", address: await solAddr(solSeed(0x66)) },
   });
-  check("fifth wallet 403", r.status === 403, r.status);
+  check("21st wallet 403", r.status === 403, r.status);
   const meA = await req("GET", "/wallet/user", { token: tokenA });
   await req("PATCH", `/wallet/${meA.data[0].id}/mock`, {
     token: tokenA,
@@ -516,7 +526,9 @@ function sock(token) {
   console.log("-- rooms (1v1, paginated) --");
   // Self-clean: deterministic A reuses its account across runs — delete its
   // prior rooms so the 3-room cap starts fresh (other users' rooms untouched).
-  const preList = await req("GET", "/rooms?sort=mine&limit=50", { token: tokenA });
+  const preList = await req("GET", "/rooms?sort=mine&limit=50", {
+    token: tokenA,
+  });
   for (const it of preList.data.items ?? []) {
     await req("DELETE", `/rooms/${it.id}`, { token: tokenA });
   }
@@ -529,12 +541,22 @@ function sock(token) {
   check("room bad access 400", r.status === 400, r.status);
   r = await req("POST", "/rooms", {
     token: tokenA,
-    body: { name: "Valid Name", description: "ok", accessType: "tier", minTier: "TIER IX" },
+    body: {
+      name: "Valid Name",
+      description: "ok",
+      accessType: "tier",
+      minTier: "TIER IX",
+    },
   });
   check("room bad minTier 400", r.status === 400, r.status);
   r = await req("POST", "/rooms", {
     token: tokenA,
-    body: { name: "Valid Name", description: "ok", accessType: "invite", inviteCode: "abc" },
+    body: {
+      name: "Valid Name",
+      description: "ok",
+      accessType: "invite",
+      inviteCode: "abc",
+    },
   });
   check("room short code 400", r.status === 400, r.status);
   r = await req("POST", "/rooms", {
@@ -550,7 +572,12 @@ function sock(token) {
   check("rooms unauth 401 (no guest reads)", r.status === 401, r.status);
   const t3 = await req("POST", "/rooms", {
     token: tokenA,
-    body: { name: "Whale Den", description: "big fish only", accessType: "tier", minTier: "TIER III" },
+    body: {
+      name: "Whale Den",
+      description: "big fish only",
+      accessType: "tier",
+      minTier: "TIER III",
+    },
   });
   check("room create 201", t3.status === 201, t3.status);
   r = await req("POST", `/rooms/${t3.data.id}/join`, {
@@ -560,7 +587,12 @@ function sock(token) {
   check("tier room under-tier 403", r.status === 403, r.status);
   const inv = await req("POST", "/rooms", {
     token: tokenA,
-    body: { name: "Secret Pair", description: "shhh", accessType: "invite", inviteCode: "PAIR99" },
+    body: {
+      name: "Secret Pair",
+      description: "shhh",
+      accessType: "invite",
+      inviteCode: "PAIR99",
+    },
   });
   check(
     "invite create returns code once",
@@ -579,7 +611,12 @@ function sock(token) {
   check("third room 201", third.status === 201, third.status);
   r = await req("POST", "/rooms", {
     token: tokenA,
-    body: { name: "Fourth Room", description: "over the limit", accessType: "tier", minTier: "TIER I" },
+    body: {
+      name: "Fourth Room",
+      description: "over the limit",
+      accessType: "tier",
+      minTier: "TIER I",
+    },
   });
   check("fourth room 403 (3-room limit)", r.status === 403, r.status);
   const list = await req("GET", "/rooms?limit=50", { token: tokenA });
@@ -740,7 +777,12 @@ function sock(token) {
   // leave + delete
   const lab = await req("POST", "/rooms", {
     token: D.token,
-    body: { name: "Leave Lab", description: "leave test", accessType: "tier", minTier: "TIER I" },
+    body: {
+      name: "Leave Lab",
+      description: "leave test",
+      accessType: "tier",
+      minTier: "TIER I",
+    },
   });
   check("leave-lab created", lab.status === 201, lab.status);
   r = await req("POST", `/rooms/${lab.data.id}/join`, {
@@ -779,7 +821,12 @@ function sock(token) {
   check("deleted room 404", r.status === 404, r.status);
   const solo = await req("POST", "/rooms", {
     token: C.token,
-    body: { name: "Solo", description: "solo test", accessType: "tier", minTier: "TIER I" },
+    body: {
+      name: "Solo",
+      description: "solo test",
+      accessType: "tier",
+      minTier: "TIER I",
+    },
   });
   check("solo created", solo.status === 201, solo.status);
   r = await req("POST", `/rooms/${solo.data.id}/leave`, {
