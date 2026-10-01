@@ -1,5 +1,5 @@
 /* Exhaustive backend route + validation tests. Requires: server on :4000, seeded DB.
- * Devnet tiers: I > $10 · II > $100 · III > $1,000 (mockUsd test hook drives tiers).
+ * Devnet tiers: I > $10 · II > $100 · III > $500 · IV > $1,000 (mockUsd test hook drives tiers).
  * SOL-only build: signatures via @noble/ed25519 + bs58 (backend's own stack). */
 const ed = require("@noble/ed25519");
 const bs58 = require("bs58");
@@ -79,7 +79,8 @@ function sock(token) {
       JSON.stringify([
         { name: "TIER I", min: 10 },
         { name: "TIER II", min: 100 },
-        { name: "TIER III", min: 1000 },
+        { name: "TIER III", min: 500 },
+        { name: "TIER IV", min: 1000 },
       ]),
     JSON.stringify(r.data.tiers),
   );
@@ -196,8 +197,8 @@ function sock(token) {
     600000,
   );
   check(
-    "B tier III (devnet)",
-    B.elig.tier === "TIER III",
+    "B tier IV (devnet)",
+    B.elig.tier === "TIER IV",
     JSON.stringify(B.elig),
   );
   const addrC = await solAddr(solSeed(0xcc));
@@ -309,8 +310,8 @@ function sock(token) {
   });
   const eligA = await req("POST", "/eligibility/check", { token: tokenA });
   check(
-    "A tier III (devnet)",
-    eligA.data.tier === "TIER III",
+    "A tier IV (devnet)",
+    eligA.data.tier === "TIER IV",
     JSON.stringify(eligA.data),
   );
   check(
@@ -706,6 +707,17 @@ function sock(token) {
     r.data.items.some((x) => x.name === "Whale Den"),
     "",
   );
+  r = await req("GET", "/rooms?tier=TIER%20III&limit=50", { token: tokenA });
+  check(
+    "rooms tier filter",
+    r.status === 200 &&
+      r.data.items.every(
+        (x) => x.accessType === "tier" && x.minTier === "TIER III",
+      ),
+    JSON.stringify(r.data.items.map((x) => x.minTier)),
+  );
+  r = await req("GET", "/rooms?sort=tier&limit=50", { token: tokenA });
+  check("rooms tier sort accepted", r.status === 200, r.status);
   r = await req("GET", "/rooms?sort=mine&limit=50", { token: tokenA });
   check(
     "sort mine accepted",

@@ -31,7 +31,7 @@ export function inviteHash(code: string): string {
 /** 1v1-only: every private room holds at most two members. */
 /** 1v1-only: every private room holds at most two members (see ROOM_CAPACITY). */
 
-const VALID_TIERS = ["TIER I", "TIER II", "TIER III"];
+const VALID_TIERS = ["TIER I", "TIER II", "TIER III", "TIER IV"];
 
 /** Cached roster item (presence-free — onlineCount is filled fresh per response). */
 interface RoomListItem {
@@ -67,7 +67,10 @@ export class RoomsService {
 
   /**
    * Room directory with search, filters, sorting and pagination.
-   * sort: created | members | mine (only rooms I'm in, newest first). Redis caches the ROSTER
+   * sort: created | members | mine (only rooms I'm in, newest first) | tier
+   * (by min-tier rank). tier= filters tier-rooms to one min-tier
+   * (TIER I/II/III — invite rooms have no tier, so the frontend hides the tier
+   * options under the invite-only filter). Redis caches the ROSTER
    * for 15s per user+param combo; the live presence count is filled fresh on
    * EVERY response from socket occupancy (never cached) — closing a tab drops
    * the count without any Leave click.
@@ -77,6 +80,7 @@ export class RoomsService {
     query: {
       q?: string;
       access?: string;
+      tier?: string;
       sort?: string;
       order?: string;
       page?: number;
@@ -88,8 +92,9 @@ export class RoomsService {
       query.access === "tier" || query.access === "invite"
         ? query.access
         : undefined;
+    const tier = VALID_TIERS.find((t) => t === query.tier);
     const sort =
-      query.sort === "mine" || query.sort === "members"
+      query.sort === "mine" || query.sort === "members" || query.sort === "tier"
         ? query.sort
         : "created";
     const order = query.order === "asc" ? 1 : -1;
@@ -98,13 +103,13 @@ export class RoomsService {
       LIST_MAX_LIMIT,
     );
     const page = Math.max(query.page ?? 1, 1);
-    const cacheKey = `rooms:list:${userId}:${JSON.stringify({ q, access, sort, order, page, limit })}`;
+    const cacheKey = `rooms:list:${userId}:${JSON.stringify({ q, access, tier, sort, order, page, limit })}`;
     const hit = await this.cache.get<RoomListOut>(cacheKey);
     const out =
       hit ??
       (await this.buildList(
         userId,
-        { q, access, sort, order, page, limit },
+        { q, access, tier, sort, order, page, limit },
         cacheKey,
       ));
     return this.withPresence(out);
@@ -126,6 +131,7 @@ export class RoomsService {
     q: {
       q: string;
       access?: string;
+      tier?: string;
       sort: string;
       order: number;
       page: number;
@@ -150,6 +156,10 @@ export class RoomsService {
     );
     let rooms = allRooms;
     if (q.access) rooms = rooms.filter((r) => r.accessType === q.access);
+    if (q.tier)
+      rooms = rooms.filter(
+        (r) => r.accessType === "tier" && r.minTier === q.tier,
+      );
     if (q.q)
       rooms = rooms.filter(
         (r) =>
@@ -171,6 +181,7 @@ export class RoomsService {
         {
           created: (r) => r.createdAt.getTime(),
           members: (r) => r._count.members,
+          tier: (r) => tierRank(r.minTier),
         };
       const key = by[q.sort];
       rooms.sort((a, b) => {
