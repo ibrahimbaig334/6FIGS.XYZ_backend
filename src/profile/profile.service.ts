@@ -33,10 +33,29 @@ export class ProfileService {
       }),
     ]);
     const elig = await this.eligibility.me(userId, wallets);
+    if ("source" in elig && elig.source === "tee") {
+      return {
+        id: user.id,
+        handle: user.handle,
+        visMode: user.visMode,
+        email: user.email,
+        tags: user.tags,
+        eligibility: elig,
+        wallets: elig.wallets.map((w, i) => ({
+          id: `tee-${i}`,
+          chain: w.family,
+          name: w.label,
+          address: null,
+          display: w.label ?? w.family.toUpperCase(),
+          mockUsd: null,
+        })),
+      };
+    }
     return {
       id: user.id,
       handle: user.handle,
       visMode: user.visMode,
+      email: user.email,
       tags: user.tags,
       eligibility: elig,
       wallets: wallets.map((w) => {

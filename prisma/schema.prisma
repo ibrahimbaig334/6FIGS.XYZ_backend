@@ -11,12 +11,16 @@ generator client {
 model User {
   id         String            @id @default(cuid())
   handle     String?           @unique
+  // Web2 account. Wallet-only accounts predate it and stay null until linked.
+  email      String?           @unique
+  passwordHash String?
   visMode    String            @default("HIDDEN")
   tags       String[]          @default([])
   isBot      Boolean           @default(false)
   createdAt  DateTime          @default(now())
   wallets    Wallet[]
   eligibility EligibilityCache?
+  teeIdentity TeeIdentity?
   sentMessages Message[]       @relation("SentMessages")
   roomMemberships RoomMember[]
   createdRooms Room[]          @relation("CreatedRooms")
@@ -43,6 +47,39 @@ model EligibilityCache {
   assetPct   Json?
   verifiedAt DateTime @default(now())
   expiresAt  DateTime
+}
+
+// Attested wealth identity produced by the tee. Holds no address, balance,
+// or amount: tier facts, at most three disclosed symbols, opaque nullifiers,
+// and an escrow blob that only the enclave can decrypt. Written only from
+// verified `SignedRegistration` payloads; read paths serve these rows without
+// any balance computation.
+model TeeIdentity {
+  identityNullifier String   @id
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tier              Int
+  tierLabel         String
+  portfolioBand     String
+  stableBps         Int
+  topAssets         Json
+  policyVersion     String
+  escrowBlob        String
+  verifiedAt        DateTime
+  expiresAt         DateTime
+  createdAt         DateTime @default(now())
+  bindings          TeeWalletBinding[]
+}
+
+model TeeWalletBinding {
+  walletNullifier   String @id
+  identityNullifier String
+  identity          TeeIdentity @relation(fields: [identityNullifier], references: [identityNullifier], onDelete: Cascade)
+  family            String
+  label             String?
+  createdAt         DateTime @default(now())
+
+  @@index([identityNullifier])
 }
 
 model Room {

@@ -7,6 +7,7 @@ import { CommonModule } from "./common/common.module";
 import { PresenceModule } from "./presence/presence.module";
 import { AuthModule } from "./auth/auth.module";
 import { WalletModule } from "./wallet/wallet.module";
+import { TeeModule } from "./tee/tee.module";
 import { EligibilityModule } from "./eligibility/eligibility.module";
 import { ProfileModule } from "./profile/profile.module";
 import { PlayModule } from "./play/play.module";
@@ -22,6 +23,7 @@ import { ChatModule } from "./chat/chat.module";
     PresenceModule,
     AuthModule,
     WalletModule,
+    TeeModule,
     EligibilityModule,
     ProfileModule,
     PlayModule,

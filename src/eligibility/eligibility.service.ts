@@ -4,6 +4,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { tierOf } from "../common/tiers";
 import { ELIGIBILITY_TTL_MS } from "../common/constants";
 import { BalancesService } from "./balances.service";
+import { TeeService } from "../tee/tee.service";
 
 export interface WalletBalance {
   walletId: string;
@@ -16,6 +17,7 @@ export class EligibilityService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly balances: BalancesService,
+    private readonly tee: TeeService,
   ) {}
 
   private async valueWallets(
@@ -43,8 +45,14 @@ export class EligibilityService {
     }
   }
 
-  /** Recompute from live onchain balances and refresh the cache row. */
+  /**
+   * Recompute and refresh. Tee-linked accounts refresh through the enclave
+   * (no signatures, no addresses at rest); legacy accounts recompute from
+   * live onchain balances.
+   */
   async check(userId: string) {
+    const tee = await this.tee.refresh(userId, true).catch(() => null);
+    if (tee) return tee;
     const wallets = await this.prisma.wallet.findMany({ where: { userId } });
     return this.checkWith(userId, wallets);
   }
@@ -66,6 +74,7 @@ export class EligibilityService {
     if (!tier) {
       await this.prisma.eligibilityCache.deleteMany({ where: { userId } });
       return {
+        source: "legacy" as const,
         tier: null,
         total,
         assetPct,
@@ -90,6 +99,7 @@ export class EligibilityService {
       },
     });
     return {
+      source: "legacy" as const,
       tier: row.tier,
       total,
       assetPct,
@@ -108,6 +118,8 @@ export class EligibilityService {
     userId: string,
     preloaded?: Pick<Wallet, "id" | "chain" | "addressEnc" | "mockUsd">[],
   ) {
+    const tee = await this.tee.read(userId).catch(() => null);
+    if (tee) return tee;
     const cachedP = this.prisma.eligibilityCache.findUnique({
       where: { userId },
     });
@@ -118,6 +130,7 @@ export class EligibilityService {
     if (cached && cached.expiresAt > new Date()) {
       const { balances, total } = await this.valueWallets(wallets);
       return {
+        source: "legacy" as const,
         tier: cached.tier,
         total,
         assetPct: cached.assetPct as unknown as Record<string, number>,
