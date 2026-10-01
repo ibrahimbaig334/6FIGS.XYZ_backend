@@ -22,6 +22,7 @@ export class RoomsController {
     @CurrentUser() userId: string,
     @Query("q") q?: string,
     @Query("access") access?: string,
+    @Query("tier") tier?: string,
     @Query("sort") sort?: string,
     @Query("order") order?: string,
     @Query("page") page?: string,
@@ -30,6 +31,7 @@ export class RoomsController {
     return this.rooms.list(userId, {
       q,
       access,
+      tier,
       sort,
       order,
       page: page ? Number(page) : undefined,

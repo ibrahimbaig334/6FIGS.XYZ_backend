@@ -230,12 +230,32 @@ export class RoomsService {
       inviteCode?: unknown;
     },
   ) {
-    // Code-point-safe truncation (never split an emoji surrogate pair).
-    const cpSlice = (s: string, n: number) => [...s].slice(0, n).join("");
-    const name = cpSlice(String(body.name ?? "").trim(), ROOM_NAME_MAX);
+    // Grapheme-safe truncation: never split an emoji / ZWJ sequence, and an
+    // emoji counts as 1 character — matching the frontend validator.
+    const IntlWithSeg = Intl as unknown as {
+      Segmenter?: new (
+        locale: string,
+        opts: { granularity: string },
+      ) => { segment(s: string): Iterable<{ segment: string }> };
+    };
+    const graphemeSlice = (s: string, n: number) => {
+      if (typeof IntlWithSeg.Segmenter === "function") {
+        const seg = new IntlWithSeg.Segmenter("en", {
+          granularity: "grapheme",
+        });
+        const parts = Array.from(seg.segment(s), (p) => p.segment);
+        return parts.length > n ? parts.slice(0, n).join("") : s;
+      }
+      // Fallback (no Segmenter): code-point-safe slice, never split surrogates.
+      return Array.from(s).slice(0, n).join("");
+    };
+    const name = graphemeSlice(
+      String(body.name ?? "").trim(),
+      ROOM_NAME_MAX,
+    );
     if (name.length < ROOM_NAME_MIN)
       throw new BadRequestException("Room name needs 3+ chars");
-    const description = cpSlice(
+    const description = graphemeSlice(
       String(body.description ?? "").trim(),
       ROOM_DESC_MAX,
     );
