@@ -19,8 +19,9 @@ export class GameController {
     return this.games.live(id, userId);
   }
 
-  @Post(":id/rematch")
-  rematch(@CurrentUser() userId: string, @Param("id") id: string) {
-    return this.games.rematch(id, userId);
+  /** Close an abandoned open game (opponent never returned) — kicks both out. */
+  @Post(":id/close")
+  close(@CurrentUser() userId: string, @Param("id") id: string) {
+    return this.games.close(id, userId);
   }
 }

@@ -484,11 +484,11 @@ function sock(token) {
     !("isBot" in (ch.data.opponent ?? {})),
     "",
   );
-  r = await req("POST", `/games/${gameId}/rematch`, {
+  r = await req("POST", `/games/${gameId}/close`, {
     token: C.token,
     body: {},
   });
-  check("rematch non-participant 403", r.status === 403, r.status);
+  check("close non-participant 403", r.status === 403, r.status);
 
   const sA = await sock(tokenA);
   const sB = await sock(B.token);
@@ -517,12 +517,142 @@ function sock(token) {
   );
   mv = await emit(sB, "makeMove", { gameId, index: 5 });
   check("move after done rejected", !!mv.error, JSON.stringify(mv));
-  const rm = await emit(sA, "rematch", { gameId });
+  // Rematch is offer → accept now (instant reset is gone): the opponent gets
+  // a toast and the board resets ONLY on accept.
+  const sC = await sock(C.token);
+  const offC = await emit(sC, "rematchOffer", { gameId });
   check(
-    "rematch resets",
-    rm.ok && rm.state.board === "........." && rm.state.status === "open",
-    JSON.stringify(rm),
+    "rematch offer non-participant rejected",
+    !!offC.error,
+    JSON.stringify(offC),
   );
+  const offerP = new Promise((res) => sB.once("rematchOffer", res));
+  const off = await emit(sA, "rematchOffer", { gameId });
+  const offered = await offerP;
+  check(
+    "rematch offer ok + opponent notified",
+    off.ok && offered.gameId === gameId && !!offered.fromHandle,
+    JSON.stringify({ off, offered }),
+  );
+  const ansC = await emit(sC, "rematchAnswer", { gameId, accept: true });
+  check(
+    "rematch answer by stranger rejected",
+    !!ansC.error,
+    JSON.stringify(ansC),
+  );
+  const decP = new Promise((res) => sA.once("rematchDeclined", res));
+  const decAns = await emit(sB, "rematchAnswer", { gameId, accept: false });
+  const dec = await decP;
+  check(
+    "rematch decline notifies offerer",
+    decAns.ok && dec.reason === "declined",
+    JSON.stringify({ decAns, dec }),
+  );
+  const offerP2 = new Promise((res) => sB.once("rematchOffer", res));
+  const off2 = await emit(sA, "rematchOffer", { gameId });
+  await offerP2;
+  const stP = new Promise((res) => sA.once("gameState", res));
+  const ans = await emit(sB, "rematchAnswer", { gameId, accept: true });
+  const pushed = await stP;
+  check(
+    "rematch accept resets + broadcasts",
+    ans.ok &&
+      ans.state.board === "........." &&
+      ans.state.status === "open" &&
+      pushed.board === ".........",
+    JSON.stringify({ ans, pushed }),
+  );
+  r = await req("GET", `/games/${gameId}/live`, { token: tokenA });
+  check(
+    "live reports opp in game room",
+    r.status === 200 && r.data.oppInGame === true && r.data.oppOnline === true,
+    JSON.stringify(r.data),
+  );
+  const offOpen = await emit(sA, "rematchOffer", { gameId });
+  check(
+    "rematch offer on open game rejected",
+    !!offOpen.error,
+    JSON.stringify(offOpen),
+  );
+  // Abandoned-game close: moves + offers reject afterwards, re-close is fine.
+  r = await req("POST", `/games/${gameId}/close`, {
+    token: tokenA,
+    body: {},
+  });
+  check(
+    "close open game",
+    ok2xx(r.status) && r.data.status === "closed",
+    JSON.stringify(r.data),
+  );
+  mv = await emit(sA, "makeMove", { gameId, index: 0 });
+  check(
+    "move on closed rejected",
+    !!mv.error && mv.error.includes("closed"),
+    JSON.stringify(mv),
+  );
+  const offClosed = await emit(sA, "rematchOffer", { gameId });
+  check(
+    "rematch offer on closed rejected",
+    !!offClosed.error,
+    JSON.stringify(offClosed),
+  );
+  r = await req("POST", `/games/${gameId}/close`, {
+    token: tokenA,
+    body: {},
+  });
+  check("re-close idempotent", ok2xx(r.status), r.status);
+  // Game-room presence: leaving the page = leaving the game (other tabs may
+  // stay connected — global online is untouched, game features use the room).
+  const ch2 = await req("POST", "/play/challenge", {
+    token: tokenA,
+    body: { userId: B.userId },
+  });
+  const g2 = ch2.data.gameId;
+  let live1 = await req("GET", `/games/${g2}/live`, { token: tokenA });
+  check(
+    "live opp not in game before join",
+    live1.status === 200 && live1.data.oppInGame === false,
+    JSON.stringify(live1.data),
+  );
+  await emit(sA, "joinGame", { gameId: g2 });
+  await emit(sB, "joinGame", { gameId: g2 });
+  live1 = await req("GET", `/games/${g2}/live`, { token: tokenA });
+  check(
+    "live opp in game after join",
+    live1.status === 200 && live1.data.oppInGame === true,
+    JSON.stringify(live1.data),
+  );
+  await emit(sA, "makeMove", { gameId: g2, index: 0 });
+  await emit(sB, "makeMove", { gameId: g2, index: 3 });
+  await emit(sA, "makeMove", { gameId: g2, index: 1 });
+  await emit(sB, "makeMove", { gameId: g2, index: 4 });
+  const win2 = await emit(sA, "makeMove", { gameId: g2, index: 2 });
+  check(
+    "second game X wins",
+    win2.ok && win2.state.status === "done",
+    JSON.stringify(win2),
+  );
+  const left = await emit(sB, "leaveGame", { gameId: g2 });
+  check("leaveGame ok", !!left.ok, JSON.stringify(left));
+  live1 = await req("GET", `/games/${g2}/live`, { token: tokenA });
+  check(
+    "live opp out after leaveGame",
+    live1.status === 200 && live1.data.oppInGame === false,
+    JSON.stringify(live1.data),
+  );
+  const offGone = await emit(sA, "rematchOffer", { gameId: g2 });
+  check(
+    "offer after opponent left rejected",
+    !!offGone.error && offGone.error.includes("left"),
+    JSON.stringify(offGone),
+  );
+  await emit(sB, "joinGame", { gameId: g2 });
+  const offerP3 = new Promise((res) => sB.once("rematchOffer", res));
+  const offBack = await emit(sA, "rematchOffer", { gameId: g2 });
+  await offerP3;
+  check("offer works after rejoin", !!offBack.ok, JSON.stringify(offBack));
+  await emit(sB, "rematchAnswer", { gameId: g2, accept: false });
+  sC.disconnect();
 
   console.log("-- rooms (1v1, paginated) --");
   // Self-clean: deterministic A reuses its account across runs — delete its
@@ -832,7 +962,7 @@ function sock(token) {
   r = await req("GET", `/rooms/${lab.data.id}/meta`, { token: D.token });
   check("deleted room 404", r.status === 404, r.status);
   const solo = await req("POST", "/rooms", {
-    token: C.token,
+    token: D.token,
     body: {
       name: "Solo",
       description: "solo test",
@@ -842,18 +972,39 @@ function sock(token) {
   });
   check("solo created", solo.status === 201, solo.status);
   r = await req("POST", `/rooms/${solo.data.id}/leave`, {
-    token: C.token,
+    token: D.token,
     body: {},
   });
   check("last leave keeps room alive", ok2xx(r.status), JSON.stringify(r.data));
-  r = await req("GET", `/rooms/${solo.data.id}/meta`, { token: C.token });
+  r = await req("GET", `/rooms/${solo.data.id}/meta`, { token: D.token });
   check(
     "empty room survives with 0 members",
     r.status === 200 && r.data.memberCount === 0 && r.data.isMember === false,
     JSON.stringify(r.data),
   );
-  r = await req("DELETE", `/rooms/${solo.data.id}`, { token: C.token });
+  r = await req("DELETE", `/rooms/${solo.data.id}`, { token: D.token });
   check("owner deletes empty room", r.status === 200, r.status);
+  // New rule: a room can never demand more tier than the creator holds.
+  r = await req("POST", "/rooms", {
+    token: C.token,
+    body: {
+      name: "Over Reach",
+      description: "no tier",
+      accessType: "tier",
+      minTier: "TIER I",
+    },
+  });
+  check("unverified cannot create tier room 403", r.status === 403, r.status);
+  r = await req("POST", "/rooms", {
+    token: D.token,
+    body: {
+      name: "Over Reach",
+      description: "too high",
+      accessType: "tier",
+      minTier: "TIER II",
+    },
+  });
+  check("cannot require tier above own 403", r.status === 403, r.status);
   r = await req("GET", `/rooms/${solo.data.id}/meta`, { token: C.token });
   check("explicitly deleted room 404", r.status === 404, r.status);
   r = await req("POST", "/rooms/cm00000000000000000000000/join", {
@@ -890,6 +1041,19 @@ function sock(token) {
     r.status === 200 && r.data.onlineCount === 1,
     JSON.stringify(r.data),
   );
+  const mem = await req("GET", `/rooms/${inv.data.id}/members`, {
+    token: B.token,
+  });
+  const memA = mem.data.find((m) => m.id !== B.userId);
+  const memB = mem.data.find((m) => m.id === B.userId);
+  check(
+    "member dot = on room page, not merely online",
+    mem.status === 200 &&
+      memA?.online === true &&
+      memB?.online === false &&
+      typeof memB?.lastSeenAt !== "undefined",
+    JSON.stringify(mem.data),
+  );
   const lv = await emit(sA, "leaveScope", {
     scope: "room",
     scopeId: inv.data.id,
@@ -919,6 +1083,49 @@ function sock(token) {
     r.status === 200 && r.data.items.length <= 100,
     r.status,
   );
+  // Room turnover: seats rotate to whoever is seated (online or not), the new
+  // pair gets a FRESH game, and the room's chat history survives them.
+  const gBefore = (
+    await req("GET", `/rooms/${inv.data.id}/game`, { token: B.token })
+  ).data;
+  const histPost = await emit(sA, "sendMessage", {
+    scope: "room",
+    scopeId: inv.data.id,
+    body: "history stays",
+  });
+  check("room chat post ok", !!histPost.ok, JSON.stringify(histPost));
+  r = await req("POST", `/rooms/${inv.data.id}/leave`, { token: B.token });
+  check("B leaves inv room", ok2xx(r.status), JSON.stringify(r.data));
+  r = await req("POST", `/rooms/${inv.data.id}/join`, {
+    token: C.token,
+    body: { code: "PAIR99" },
+  });
+  check("C takes the free seat", ok2xx(r.status), JSON.stringify(r.data));
+  const gAfter = await req("GET", `/rooms/${inv.data.id}/game`, {
+    token: C.token,
+  });
+  check(
+    "new pair gets a fresh game",
+    gAfter.status === 200 && gAfter.data.gameId !== gBefore.gameId,
+    JSON.stringify(gAfter.data),
+  );
+  const hAfter = await req("GET", `/chat/room/${inv.data.id}?limit=50`, {
+    token: C.token,
+  });
+  check(
+    "new member sees prior history",
+    hAfter.status === 200 &&
+      hAfter.data.items.some((m) => m.body === "history stays"),
+    `items=${hAfter.data.items?.length}`,
+  );
+  // Restore B's seat for the rest of the suite.
+  r = await req("POST", `/rooms/${inv.data.id}/leave`, { token: C.token });
+  check("C leaves inv room", ok2xx(r.status), JSON.stringify(r.data));
+  r = await req("POST", `/rooms/${inv.data.id}/join`, {
+    token: B.token,
+    body: { code: "PAIR99" },
+  });
+  check("B rejoins inv room", ok2xx(r.status), JSON.stringify(r.data));
   r = await req("GET", "/chat/tokens/xyznotreal123", { token: B.token });
   check(
     "token unknown symbol",
@@ -972,6 +1179,16 @@ function sock(token) {
     "WS dm send ok + tickers",
     ok.ok && JSON.stringify(ok.tickers).includes("ETH"),
     JSON.stringify(ok),
+  );
+  const many = await emit(sA, "sendMessage", {
+    scope: "dm",
+    scopeId: ch.data.matchId,
+    body: "🚀".repeat(300),
+  });
+  check(
+    "WS emoji flood capped at 240 graphemes",
+    many.ok && many.message.body === "🚀".repeat(240),
+    `len=${many.message?.body?.length}`,
   );
   sA.disconnect();
   sB.disconnect();
@@ -1080,6 +1297,12 @@ function sock(token) {
   );
 
   // room requests
+  // Self-clean: a crashed prior run can leave a pending request between A and B
+  // (requests, unlike rooms, had no cleanup) — cancel any before testing.
+  const stale = await req("GET", "/play/requests/outgoing", { token: tokenA });
+  for (const it of stale.data ?? []) {
+    await req("POST", `/play/requests/${it.id}/cancel`, { token: tokenA });
+  }
   r = await req("POST", "/play/request", {
     token: tokenA,
     body: { userId: D.userId },

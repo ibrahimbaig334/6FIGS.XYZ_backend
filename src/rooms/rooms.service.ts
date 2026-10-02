@@ -272,8 +272,19 @@ export class RoomsService {
     let codeHash: string | null = null;
     if (accessType === "tier") {
       if (!VALID_TIERS.includes(String(body.minTier)))
-        throw new BadRequestException("minTier must be TIER I, II or III");
+        throw new BadRequestException("minTier must be TIER I, II, III or IV");
       minTier = String(body.minTier);
+      // A room can never demand more than the creator currently holds — hides
+      // the higher-tier options in the UI and blocks forged requests here.
+      const elig = await this.eligibility.me(userId);
+      if (!elig.tier)
+        throw new ForbiddenException(
+          "Verify your holdings in Profile before creating a tier room",
+        );
+      if (tierRank(minTier) > tierRank(elig.tier))
+        throw new ForbiddenException(
+          `You are ${elig.tier} — you cannot require ${minTier}`,
+        );
     } else {
       const code = String(body.inviteCode ?? "").trim();
       if (code.length < INVITE_CODE_MIN)
@@ -317,6 +328,19 @@ export class RoomsService {
       if (inviteHash(String(code ?? "")) !== room.inviteCodeHash)
         throw new ForbiddenException("Wrong invite code");
     }
+    // Tier rooms re-check eligibility for existing members too: a holder who
+    // dropped below the room's tier is locked out of their own room.
+    if (room.accessType === "tier") {
+      const elig = await this.eligibility.me(userId);
+      if (!elig.tier)
+        throw new ForbiddenException(
+          "Verify your holdings in Profile to enter this room",
+        );
+      if (tierRank(elig.tier) < tierRank(room.minTier))
+        throw new ForbiddenException(
+          `This room needs ${room.minTier} — you are ${elig.tier}`,
+        );
+    }
     const [existing, count] = await Promise.all([
       this.prisma.roomMember.findUnique({
         where: { roomId_userId: { roomId, userId } },
@@ -326,16 +350,6 @@ export class RoomsService {
     if (existing) return { ok: true, roomId };
     if (count >= ROOM_CAPACITY)
       throw new ForbiddenException("Room is full — private rooms are 1v1");
-    const elig = await this.eligibility.me(userId);
-    if (!elig.tier)
-      throw new ForbiddenException("Verify ≥ $100K in Profile first");
-    if (room.accessType === "tier") {
-      if (tierRank(elig.tier) < tierRank(room.minTier)) {
-        throw new ForbiddenException(
-          `Needs ${room.minTier} (you are ${elig.tier})`,
-        );
-      }
-    }
     await this.prisma.roomMember.create({ data: { roomId, userId } });
     await this.cache.delPrefix("rooms:list:");
     return { ok: true, roomId };
@@ -381,7 +395,11 @@ export class RoomsService {
     return rows.map((m) => ({
       id: m.user.id,
       handle: m.user.handle ?? `user_${m.user.id.slice(-4)}`,
-      ...this.presence.status(m.user.id),
+      // Room-page presence (NOT global online): the dot means "on this room
+      // page right now" — a member browsing elsewhere shows as away. Matches
+      // the header's scope-based onlineCount instead of contradicting it.
+      online: this.presence.isInRoom(m.user.id, `room:${roomId}`),
+      lastSeenAt: this.presence.status(m.user.id).lastSeenAt,
     }));
   }
 
@@ -406,6 +424,20 @@ export class RoomsService {
       });
       if (!members.some((m) => m.userId === userId))
         throw new ForbiddenException("Join the room first");
+      // Members who dropped below the room's tier lose access to its game too.
+      const room = await this.prisma.room.findUnique({
+        where: { id: roomId },
+        select: { accessType: true, minTier: true },
+      });
+      if (room?.accessType === "tier") {
+        const elig = await this.eligibility.me(userId);
+        if (!elig.tier || tierRank(elig.tier) < tierRank(room.minTier))
+          throw new ForbiddenException(
+            elig.tier
+              ? `This room needs ${room.minTier} — you are ${elig.tier}`
+              : "Verify your holdings in Profile to enter this room",
+          );
+      }
       if (members.length < 2)
         throw new BadRequestException("Waiting for your 1v1 peer to join");
       const [u1, u2] = [members[0].userId, members[1].userId];
@@ -442,6 +474,11 @@ export class RoomsService {
    * Lightweight room header for the join gate (name, access rules, membership).
    * Never exposes inviteCodeHash — only isMember tells the client whether to
    * ask for a code at all.
+   *
+   * `canEnter`/`joinReason` carry the ENTRY verdict so the gate can explain
+   * itself (low tier, room full, unverified) instead of a generic failure —
+   * enforced for members too, so a holder who drops tier is locked out of a
+   * room they created at a higher tier.
    */
   async meta(userId: string, roomId: string) {
     const [room, member, memberCount] = await Promise.all([
@@ -456,6 +493,17 @@ export class RoomsService {
       where: { id: room.createdBy },
       select: { id: true, handle: true },
     });
+    const isMember = !!member;
+    let joinReason: string | null = null;
+    if (room.accessType === "tier") {
+      const elig = await this.eligibility.me(userId);
+      if (!elig.tier)
+        joinReason = "Verify your holdings in Profile to enter this room";
+      else if (tierRank(elig.tier) < tierRank(room.minTier))
+        joinReason = `This room needs ${room.minTier} — you are ${elig.tier}`;
+    }
+    if (!joinReason && !isMember && memberCount >= ROOM_CAPACITY)
+      joinReason = "Room is full — private rooms are 1v1";
     return {
       id: room.id,
       name: room.name,
@@ -465,8 +513,10 @@ export class RoomsService {
       minTier: room.minTier,
       memberCount,
       onlineCount: this.presence.countInRoom(`room:${roomId}`),
-      isMember: !!member,
+      isMember,
       isOwner: room.createdBy === userId,
+      canEnter: !joinReason,
+      joinReason,
       creatorHandle: creator?.handle ?? `user_${room.createdBy.slice(-4)}`,
     };
   }

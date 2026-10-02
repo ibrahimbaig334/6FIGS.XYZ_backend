@@ -40,6 +40,9 @@ export const QUEUE_TICKET_TTL_MS = 2 * 60 * 1000;
 export const FRESH_MATCH_MS = 5 * 60 * 1000;
 export const QUEUE_LOCK_MS = 5_000;
 
+// Games
+export const REMATCH_OFFER_MS = 15_000; // rematch toast window (accept/decline)
+
 // Listing defaults
 export const LIST_DEFAULT_LIMIT = 20;
 export const LIST_MAX_LIMIT = 50;

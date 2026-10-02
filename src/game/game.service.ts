@@ -90,7 +90,8 @@ export class GameService {
     };
   }
 
-  /** Opponent presence for the "left" overlay — memory-only, zero DB trips. */
+  /** Opponent presence for the left-game countdown: global online plus
+   *  whether they are actually ON the game page (memory-only, zero DB trips). */
   async live(gameId: string, userId: string) {
     const game = await this.load(gameId, userId);
     const oppId =
@@ -98,11 +99,14 @@ export class GameService {
     return {
       oppOnline: this.presence.status(oppId).online,
       oppHere: this.presence.isInRoom(oppId, `dm:${game.matchId}`),
+      oppInGame: this.presence.isInRoom(oppId, `game:${gameId}`),
     };
   }
 
   async move(gameId: string, userId: string, index: number) {
     const game = await this.load(gameId, userId);
+    if (game.status === "closed")
+      throw new BadRequestException("This game was closed");
     if (game.status !== "open")
       throw new BadRequestException("Game is over — rematch to play again");
     const mark = game.match.aUserId === userId ? "X" : "O";
@@ -128,12 +132,66 @@ export class GameService {
   }
 
   async rematch(gameId: string, userId: string) {
-    await this.load(gameId, userId);
+    const game = await this.load(gameId, userId);
+    if (game.status === "closed")
+      throw new BadRequestException("This game was closed");
+    // Only finished games reset — crossed/stale offers can never wipe a live one.
+    if (game.status === "open")
+      throw new BadRequestException("Finish the current game first");
     const updated = await this.prisma.game.update({
       where: { id: gameId },
       data: { board: ".........", turn: "X", status: "open", winner: null },
       include: { match: true },
     });
     return this.shape(updated, userId);
+  }
+
+  /**
+   * Close an abandoned game (opponent never returned): moves and rematches
+   * reject afterwards, and both clients treat it as kicked-out (redirect).
+   * Idempotent — closing a finished game just returns its state.
+   */
+  async close(gameId: string, userId: string) {
+    const game = await this.load(gameId, userId);
+    if (game.status !== "open") return this.shape(game, userId);
+    const updated = await this.prisma.game.update({
+      where: { id: gameId },
+      data: { board: game.board, turn: game.turn, status: "closed" },
+      include: { match: true },
+    });
+    return this.shape(updated, userId);
+  }
+
+  /**
+   * Validate a rematch OFFER (the reset itself happens only on accept):
+   * finished games only, opponent must be ON the game page to get the toast
+   * (globally online but elsewhere is NOT enough).
+   */
+  async offerRematch(gameId: string, userId: string) {
+    const game = await this.load(gameId, userId);
+    if (game.status === "open")
+      throw new BadRequestException("Finish the current game first");
+    if (game.status === "closed")
+      throw new BadRequestException("This game was closed");
+    const oppId =
+      game.match.aUserId === userId ? game.match.bUserId : game.match.aUserId;
+    if (!this.presence.isInRoom(oppId, `game:${gameId}`))
+      throw new BadRequestException("Opponent left the game");
+    const [me, opp] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, handle: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: oppId },
+        select: { id: true, handle: true },
+      }),
+    ]);
+    return {
+      toUserId: oppId,
+      fromUserId: userId,
+      fromHandle: me?.handle ?? `user_${userId.slice(-4)}`,
+      toHandle: opp?.handle ?? `user_${oppId.slice(-4)}`,
+    };
   }
 }

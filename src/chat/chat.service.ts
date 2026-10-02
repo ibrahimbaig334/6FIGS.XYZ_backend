@@ -8,6 +8,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { RoomsService } from "../rooms/rooms.service";
 import { TokensService } from "./tokens.service";
 import { MSG_MAX_LEN, TICKERS_PER_MSG } from "../common/constants";
+import { graphemeSlice } from "../common/text";
 
 export function extractTickers(text: string): string[] {
   const out: string[] = [];
@@ -90,7 +91,9 @@ export class ChatService {
   }
 
   async post(userId: string, scope: string, scopeId: string, body: string) {
-    const text = body.trim().slice(0, MSG_MAX_LEN);
+    // Grapheme cap (mirrors the client clamp): emoji-heavy messages can never
+    // bypass MSG_MAX_LEN, and slicing never splits a surrogate pair/sequence.
+    const text = graphemeSlice(body.trim(), MSG_MAX_LEN);
     if (!text) throw new BadRequestException("Empty message");
     const [, sender] = await Promise.all([
       this.assertScopeAccess(userId, scope, scopeId),
