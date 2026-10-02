@@ -20,6 +20,7 @@ export class EligibilityService {
 
   private async valueWallets(
     wallets: Pick<Wallet, "id" | "chain" | "addressEnc" | "mockUsd">[],
+    force = false,
   ): Promise<{ balances: WalletBalance[]; total: number }> {
     const balances = await Promise.all(
       wallets.map(async (w) => ({
@@ -29,6 +30,7 @@ export class EligibilityService {
           w.chain,
           this.decode(w.addressEnc),
           w.mockUsd,
+          force,
         ),
       })),
     );
@@ -43,17 +45,20 @@ export class EligibilityService {
     }
   }
 
-  /** Recompute from live onchain balances and refresh the cache row. */
-  async check(userId: string) {
+  /** Recompute from live onchain balances and refresh the cache row.
+   *  force=true skips the 10-min RPC balance cache (PROVE COMBINED TOTAL) —
+   *  every other caller stays cheap and cached. */
+  async check(userId: string, force = false) {
     const wallets = await this.prisma.wallet.findMany({ where: { userId } });
-    return this.checkWith(userId, wallets);
+    return this.checkWith(userId, wallets, force);
   }
 
   private async checkWith(
     userId: string,
     wallets: Pick<Wallet, "id" | "chain" | "addressEnc" | "mockUsd">[],
+    force = false,
   ) {
-    const { balances, total } = await this.valueWallets(wallets);
+    const { balances, total } = await this.valueWallets(wallets, force);
     const tier = tierOf(total);
     const perChain: Record<string, number> = {};
     for (const b of balances)

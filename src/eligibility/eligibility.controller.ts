@@ -1,4 +1,4 @@
-import { Controller, Get, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Post, UseGuards } from "@nestjs/common";
 import { CurrentUser } from "../auth/current-user";
 import { JwtGuard } from "../auth/jwt.guard";
 import { EligibilityService } from "./eligibility.service";
@@ -14,7 +14,10 @@ export class EligibilityController {
   }
 
   @Post("check")
-  check(@CurrentUser() userId: string) {
-    return this.eligibility.check(userId);
+  check(
+    @CurrentUser() userId: string,
+    @Body() body: { force?: unknown },
+  ) {
+    return this.eligibility.check(userId, body?.force === true);
   }
 }

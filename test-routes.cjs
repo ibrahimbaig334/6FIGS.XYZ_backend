@@ -349,6 +349,32 @@ function sock(token) {
       keys.length > 0,
       keys.join(",") || "no bal: key — RPC unreachable?",
     );
+    // PROVE path: poison the RPC cache, then force-recheck must bypass it.
+    const bkey = `bal:SOL:${addrE}`;
+    const liveBal = await redis.get(bkey);
+    if (liveBal !== null && liveBal !== "999999") {
+      await redis.set(bkey, "999999", "PX", 60000);
+      const stale = await req("POST", "/eligibility/check", {
+        token: linkE.data.token,
+      });
+      const forced = await req("POST", "/eligibility/check", {
+        token: linkE.data.token,
+        body: { force: true },
+      });
+      const after = await redis.get(bkey);
+      check(
+        "force recheck bypasses stale RPC cache",
+        ok2xx(stale.status) &&
+          ok2xx(forced.status) &&
+          after !== null &&
+          after !== "999999",
+        JSON.stringify({
+          staleUsd: stale.data.balances?.[0]?.usd,
+          forcedUsd: forced.data.balances?.[0]?.usd,
+          cacheAfter: after,
+        }),
+      );
+    }
   } finally {
     redis.disconnect();
   }

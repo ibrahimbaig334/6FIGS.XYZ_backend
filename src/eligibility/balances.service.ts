@@ -39,12 +39,13 @@ export class BalancesService {
     chain: string,
     address: string,
     mockUsd: number | null,
+    force = false,
   ): Promise<number> {
     if (isDevnet() && mockUsd !== null && mockUsd !== undefined) return mockUsd;
     try {
       if (chain === "SOL") {
         const [sol, price] = await Promise.all([
-          this.solNative(address),
+          this.solNative(address, force),
           this.tokens.getPrice("SOL"),
         ]);
         return price ? sol * price : 0;
@@ -78,10 +79,30 @@ export class BalancesService {
     return native;
   }
 
-  private solNative(address: string): Promise<number> {
-    return this.cachedNative(`bal:SOL:${address}`, async () => {
+  private async refreshNative(
+    key: string,
+    fetch: () => Promise<number>,
+  ): Promise<number> {
+    // Force path (PROVE COMBINED TOTAL): always hit RPC, then overwrite the
+    // cache row with truth. A failed fetch throws before any write, so a
+    // blip keeps the previous cached value instead of poisoning it.
+    const native = await fetch();
+    try {
+      await this.cache.set(key, String(native), BAL_CACHE_MS);
+    } catch {
+      /* cache write failure must not fail the lookup */
+    }
+    return native;
+  }
+
+  private solNative(address: string, force = false): Promise<number> {
+    const key = `bal:SOL:${address}`;
+    const fetch = async () => {
       const lamports = await this.sol().getBalance(new PublicKey(address));
       return lamports / 1e9;
-    });
+    };
+    return force
+      ? this.refreshNative(key, fetch)
+      : this.cachedNative(key, fetch);
   }
 }
