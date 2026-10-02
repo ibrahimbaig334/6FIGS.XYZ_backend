@@ -131,12 +131,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.dropOffer(body.gameId); // one live offer per game — newest wins
       const timer = setTimeout(() => {
         this.offers.delete(body.gameId as string);
-        this.server
-          .to(`user:${offer.fromUserId}`)
-          .emit("rematchDeclined", {
-            gameId: body.gameId,
-            reason: "noresponse",
-          });
+        this.server.to(`user:${offer.fromUserId}`).emit("rematchDeclined", {
+          gameId: body.gameId,
+          reason: "noresponse",
+        });
       }, REMATCH_OFFER_MS);
       this.offers.set(body.gameId, {
         gameId: body.gameId,

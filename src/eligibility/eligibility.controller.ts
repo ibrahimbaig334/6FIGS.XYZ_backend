@@ -14,10 +14,7 @@ export class EligibilityController {
   }
 
   @Post("check")
-  check(
-    @CurrentUser() userId: string,
-    @Body() body: { force?: unknown },
-  ) {
+  check(@CurrentUser() userId: string, @Body() body: { force?: unknown }) {
     return this.eligibility.check(userId, body?.force === true);
   }
 }
