@@ -32,7 +32,7 @@ export class WalletController {
   }
 
   @Post("verify")
-  verify(
+  async verify(
     @Req() req: AuthedRequest,
     @Body()
     body: {
@@ -49,7 +49,7 @@ export class WalletController {
         String(body.address ?? ""),
         String(body.nonce ?? ""),
         String(body.signature ?? ""),
-        this.auth.userIdFromHeader(req.headers.authorization),
+        await this.auth.userIdFromHeader(req.headers.authorization),
         typeof body.walletName === "string" ? body.walletName : null,
       ),
     );
@@ -98,11 +98,11 @@ export class WalletController {
   }
 
   @Post("link")
-  link(
+  async link(
     @Req() req: AuthedRequest,
     @Body() body: { chain?: string; address?: string; walletName?: string },
   ) {
-    const userId = this.auth.userIdFromHeader(req.headers.authorization);
+    const userId = await this.auth.userIdFromHeader(req.headers.authorization);
     return this.auth.linkWallet(
       userId,
       String(body.chain ?? ""),

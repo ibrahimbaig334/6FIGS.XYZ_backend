@@ -14,6 +14,9 @@ model User {
   // Web2 account. Wallet-only accounts predate it and stay null until linked.
   email      String?           @unique
   passwordHash String?
+  emailVerifiedAt DateTime?
+  // Bumped on password change/reset; JWT guard rejects older tokens.
+  passwordChangedAt DateTime?
   visMode    String            @default("HIDDEN")
   tags       String[]          @default([])
   isBot      Boolean           @default(false)
@@ -21,9 +24,25 @@ model User {
   wallets    Wallet[]
   eligibility EligibilityCache?
   teeIdentity TeeIdentity?
+  emailTokens EmailToken[]
   sentMessages Message[]       @relation("SentMessages")
   roomMemberships RoomMember[]
   createdRooms Room[]          @relation("CreatedRooms")
+}
+
+// Single-use, expiring account tokens. Only the SHA-256 hash is stored; the
+// raw token exists only in the emailed link.
+model EmailToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind       String // "verify" | "reset"
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, kind])
 }
 
 model Wallet {
@@ -32,7 +51,6 @@ model Wallet {
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   chain       String
   addressHash String    @unique
-  addressEnc  String?
   name        String? // wallet app label (e.g. Phantom) captured at connect
   mockUsd     Int?
   verifiedAt  DateTime?

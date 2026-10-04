@@ -144,7 +144,7 @@ export class AuthService {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: wallet.userId },
     });
-    return { token: this.issueToken(user.id), user: this.publicUser(user) };
+    return { token: await this.issueToken(user.id), user: this.publicUser(user) };
   }
 
   /**
@@ -175,7 +175,7 @@ export class AuthService {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: wallet.userId },
     });
-    return { token: this.issueToken(user.id), user: this.publicUser(user) };
+    return { token: await this.issueToken(user.id), user: this.publicUser(user) };
   }
 
   private async checkSignature(
@@ -219,7 +219,7 @@ export class AuthService {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: wallet.userId },
     });
-    return { token: this.issueToken(user.id), user: this.publicUser(user) };
+    return { token: await this.issueToken(user.id), user: this.publicUser(user) };
   }
 
   private async findOrCreateWallet(
@@ -268,18 +268,27 @@ export class AuthService {
         userId: owner,
         chain,
         addressHash: hash,
-        // NOTE: reversible placeholder until ZKP encryption lands (see SUMMARY.txt).
-        addressEnc: Buffer.from(normalized, "utf8").toString("base64url"),
         ...(name ? { name } : {}),
         verifiedAt: new Date(),
       },
     });
   }
 
-  issueToken(userId: string): string {
-    return jwt.sign({ sub: userId }, jwtSecret(), {
-      expiresIn: JWT_EXPIRES_IN,
+  /**
+   * Mint a session token carrying the account's current password version
+   * (`passwordChangedAt` in ms). A later rotation bumps the version, so any
+   * token minted before it fails `validateToken` even within the same second.
+   */
+  async issueToken(userId: string): Promise<string> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { passwordChangedAt: true },
     });
+    return jwt.sign(
+      { sub: userId, pv: user?.passwordChangedAt?.getTime() ?? 0 },
+      jwtSecret(),
+      { expiresIn: JWT_EXPIRES_IN },
+    );
   }
 
   /**
@@ -316,20 +325,40 @@ export class AuthService {
     });
   }
 
-  validateToken(token: string): { userId: string } {
+  /**
+   * Verify a session token and reject it when it predates a password change.
+   * `iat` is in seconds; any token issued before the rotation (even in the
+   * same second) is dead, so a stolen session does not survive a reset.
+   */
+  async validateToken(token: string): Promise<{ userId: string }> {
+    let payload: { sub?: unknown; pv?: unknown };
     try {
-      const payload = jwt.verify(token, jwtSecret()) as { sub?: unknown };
-      if (typeof payload.sub !== "string") throw new Error("bad sub");
-      return { userId: payload.sub };
+      payload = jwt.verify(token, jwtSecret()) as { sub?: unknown; pv?: unknown };
     } catch {
       throw new UnauthorizedException("Invalid session — reconnect wallet");
     }
+    if (typeof payload.sub !== "string") {
+      throw new UnauthorizedException("Invalid session — reconnect wallet");
+    }
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: { id: true, passwordChangedAt: true },
+    });
+    if (!user) {
+      throw new UnauthorizedException("Account no longer exists — reconnect wallet");
+    }
+    const current = user.passwordChangedAt?.getTime() ?? 0;
+    const tokenVersion = typeof payload.pv === "number" ? payload.pv : 0;
+    if (tokenVersion < current) {
+      throw new UnauthorizedException("Session expired after a password change — sign in again");
+    }
+    return { userId: user.id };
   }
 
-  userIdFromHeader(authHeader: string | undefined): string | null {
+  async userIdFromHeader(authHeader: string | undefined): Promise<string | null> {
     if (!authHeader?.startsWith("Bearer ")) return null;
     try {
-      return this.validateToken(authHeader.slice(7)).userId;
+      return (await this.validateToken(authHeader.slice(7))).userId;
     } catch {
       return null;
     }
@@ -343,7 +372,15 @@ export class AuthService {
     id: string;
     handle: string | null;
     visMode: string;
+    email?: string | null;
+    emailVerifiedAt?: Date | null;
   }) {
-    return { id: user.id, handle: user.handle, visMode: user.visMode };
+    return {
+      id: user.id,
+      handle: user.handle,
+      visMode: user.visMode,
+      email: user.email ?? null,
+      emailVerified: user.emailVerifiedAt != null,
+    };
   }
 }

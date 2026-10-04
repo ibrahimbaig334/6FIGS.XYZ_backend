@@ -26,4 +26,43 @@ export class EmailController {
   ) {
     return this.email.link(userId, String(body.email ?? ""), String(body.password ?? ""));
   }
+
+  /** Consume an emailed verification link. */
+  @Post("verify")
+  verify(@Body() body: { token?: string }) {
+    return this.email.verify(String(body.token ?? ""));
+  }
+
+  /** Re-send the verification email for the current account. */
+  @Post("resend-verification")
+  @UseGuards(JwtGuard)
+  resendVerification(@CurrentUser() userId: string) {
+    return this.email.resendVerification(userId);
+  }
+
+  /** Start a password reset; always returns the same generic response. */
+  @Post("forgot")
+  forgot(@Body() body: { email?: string }) {
+    return this.email.forgot(String(body.email ?? ""));
+  }
+
+  /** Finish a password reset with the emailed token. */
+  @Post("reset")
+  reset(@Body() body: { token?: string; password?: string }) {
+    return this.email.reset(String(body.token ?? ""), String(body.password ?? ""));
+  }
+
+  /** Rotate the password for the current session. */
+  @Post("change-password")
+  @UseGuards(JwtGuard)
+  changePassword(
+    @CurrentUser() userId: string,
+    @Body() body: { currentPassword?: string; newPassword?: string },
+  ) {
+    return this.email.changePassword(
+      userId,
+      String(body.currentPassword ?? ""),
+      String(body.newPassword ?? ""),
+    );
+  }
 }

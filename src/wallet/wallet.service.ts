@@ -6,16 +6,12 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { AuthService } from "../auth/auth.service";
-import { shortAddr, isDevnet } from "../common/tiers";
+import { isDevnet } from "../common/tiers";
 
-function decodeAddr(enc: string | null): string {
-  try {
-    return enc ? Buffer.from(enc, "base64url").toString("utf8") : "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
+/**
+ * Wallet listings never expose an address: the schema has no readable address
+ * column, so only the family and a display label are returned.
+ */
 @Injectable()
 export class WalletService {
   constructor(
@@ -28,17 +24,14 @@ export class WalletService {
       where: { userId },
       orderBy: { id: "asc" },
     });
-    return wallets.map((w) => {
-      const address = decodeAddr(w.addressEnc);
-      return {
-        id: w.id,
-        chain: w.chain,
-        name: w.name,
-        address,
-        display: shortAddr(address),
-        mockUsd: w.mockUsd,
-      };
-    });
+    return wallets.map((w) => ({
+      id: w.id,
+      chain: w.chain,
+      name: w.name,
+      address: null,
+      display: w.name ?? w.chain,
+      mockUsd: w.mockUsd,
+    }));
   }
 
   async setMock(userId: string, walletId: string, value: number) {

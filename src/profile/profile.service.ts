@@ -6,16 +6,8 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { EligibilityService } from "../eligibility/eligibility.service";
-import { VIS_MODES, shortAddr } from "../common/tiers";
+import { VIS_MODES } from "../common/tiers";
 import { HANDLE_PATTERN } from "../common/constants";
-
-function decodeAddr(enc: string | null): string {
-  try {
-    return enc ? Buffer.from(enc, "base64url").toString("utf8") : "unknown";
-  } catch {
-    return "unknown";
-  }
-}
 
 @Injectable()
 export class ProfileService {
@@ -32,13 +24,14 @@ export class ProfileService {
         orderBy: { id: "asc" },
       }),
     ]);
-    const elig = await this.eligibility.me(userId, wallets);
+    const elig = await this.eligibility.me(userId);
     if ("source" in elig && elig.source === "tee") {
       return {
         id: user.id,
         handle: user.handle,
         visMode: user.visMode,
         email: user.email,
+        emailVerified: user.emailVerifiedAt != null,
         tags: user.tags,
         eligibility: elig,
         wallets: elig.wallets.map((w, i) => ({
@@ -51,24 +44,23 @@ export class ProfileService {
         })),
       };
     }
+    // No stored address exists, so a wallet row exposes only its label.
     return {
       id: user.id,
       handle: user.handle,
       visMode: user.visMode,
       email: user.email,
+      emailVerified: user.emailVerifiedAt != null,
       tags: user.tags,
       eligibility: elig,
-      wallets: wallets.map((w) => {
-        const address = decodeAddr(w.addressEnc);
-        return {
-          id: w.id,
-          chain: w.chain,
-          name: w.name,
-          address,
-          display: shortAddr(address),
-          mockUsd: w.mockUsd,
-        };
-      }),
+      wallets: wallets.map((w) => ({
+        id: w.id,
+        chain: w.chain,
+        name: w.name,
+        address: null,
+        display: w.name ?? w.chain,
+        mockUsd: w.mockUsd,
+      })),
     };
   }
 

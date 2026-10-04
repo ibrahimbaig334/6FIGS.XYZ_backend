@@ -83,6 +83,13 @@ export class TeeService {
         ...(splitList(process.env.SIXFIGS_REQUIRED_SUPPORT_ATTRS).length
           ? { requiredSupportAttributes: splitList(process.env.SIXFIGS_REQUIRED_SUPPORT_ATTRS) }
           : {}),
+        ...(splitList(process.env.SIXFIGS_REQUIRED_ESCROW_KEY_PROVIDERS).length
+          ? {
+              requiredEscrowKeyProviders: splitList(
+                process.env.SIXFIGS_REQUIRED_ESCROW_KEY_PROVIDERS,
+              ),
+            }
+          : {}),
       },
       allowMock: process.env.SIXFIGS_ALLOW_MOCK === "1",
     };
@@ -96,6 +103,9 @@ export class TeeService {
       allowedProjects: config.policy.allowedProjects,
       ...(config.policy.requiredSupportAttributes
         ? { requiredSupportAttributes: config.policy.requiredSupportAttributes }
+        : {}),
+      ...(config.policy.requiredEscrowKeyProviders
+        ? { requiredEscrowKeyProviders: config.policy.requiredEscrowKeyProviders }
         : {}),
     };
   }
@@ -125,11 +135,28 @@ export class TeeService {
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RECHECK_TTL_MS;
   }
 
-  /** Issue a single-use registration nonce bound to this session. */
-  async issueNonce(userId: string): Promise<{ nonce: string }> {
+  /**
+   * Issue a single-use registration nonce bound to this session. When the user
+   * already has a verified identity, also return what an addition needs: the
+   * stored identity pseudonym and the opaque escrow blob. The blob is
+   * ciphertext the backend cannot read; handing it back to its owner is what
+   * lets the browser add a wallet without reconnecting the old ones.
+   */
+  async issueNonce(userId: string): Promise<{
+    nonce: string;
+    add?: { identityNullifier: string; escrowBlob: SignedEnvelope };
+  }> {
     const nonce = randomBytes(24).toString("base64url");
     await this.cache.set(`tee:nonce:${nonce}`, { userId }, NONCE_TTL_MS);
-    return { nonce };
+    const stored = await this.prisma.teeIdentity.findUnique({ where: { userId } });
+    if (!stored) return { nonce };
+    return {
+      nonce,
+      add: {
+        identityNullifier: stored.identityNullifier,
+        escrowBlob: JSON.parse(stored.escrowBlob) as SignedEnvelope,
+      },
+    };
   }
 
   /** Consume a nonce; consumed or unknown nonces fail closed. */
@@ -154,13 +181,16 @@ export class TeeService {
   async register(
     userId: string,
     signed: SignedRegistration,
-    escrowBlob: SignedEnvelope,
+    escrowBlob?: SignedEnvelope,
   ): Promise<TeeIdentityView> {
     const { verifier, expectedPolicyVersion } = this.ensureConfigured();
     if (!signed || typeof signed !== "object" || !signed.body || typeof signed.body.nonce !== "string") {
       throw new BadRequestException("Malformed signed registration");
     }
-    if (!escrowBlob || typeof escrowBlob !== "object" || escrowBlob.v !== 1) {
+    // Additions carry the merged blob inside the signed result; establishments
+    // carry the client-produced blob as a separate field.
+    const establishment = signed.body.previousIdentityNullifier === undefined;
+    if (establishment && (!escrowBlob || escrowBlob.v !== 1)) {
       throw new BadRequestException("Malformed escrow blob");
     }
     const boundUser = await this.consumeNonce(signed.body.nonce);
@@ -180,21 +210,25 @@ export class TeeService {
       );
     }
 
-    const kept = body.walletNullifiers;
     const removed = body.removedWalletNullifiers ?? [];
+    if (removed.length > 0) {
+      // The product is add-only; a removal result is never persisted.
+      throw new BadRequestException("Wallet removal is not supported");
+    }
+    const kept = body.walletNullifiers;
     const keptIds = kept.map((w) => w.walletNullifier);
-    const removedIds = removed.map((w) => w.walletNullifier);
-    const allIds = [...keptIds, ...removedIds];
-    if (allIds.length === 0) throw new BadRequestException("Empty wallet set");
+    const addedIds = (body.addedWalletNullifiers ?? []).map((w) => w.walletNullifier);
+    if (keptIds.length === 0) throw new BadRequestException("Empty wallet set");
     const labels = new Map(kept.map((w) => [w.walletNullifier, w.label ?? null]));
+    const isAddition = body.previousIdentityNullifier !== undefined;
+    if (isAddition && !body.nextEscrowBlob) {
+      throw new BadRequestException("Addition result carries no escrow blob");
+    }
+    // An addition stores the enclave-produced merged blob; an establishment
+    // stores the client-produced blob.
+    const escrowForWrite = JSON.stringify(body.nextEscrowBlob ?? escrowBlob);
 
     const persisted = await this.prisma.$transaction(async (tx) => {
-      const ownerRows = await tx.teeWalletBinding.findMany({
-        where: { walletNullifier: { in: allIds } },
-      });
-      const ownerIdentities = new Set(ownerRows.map((r) => r.identityNullifier));
-      const mine = await tx.teeIdentity.findUnique({ where: { userId } });
-
       const writeIdentity = async (identityNullifier: string) => {
         await tx.teeIdentity.upsert({
           where: { identityNullifier },
@@ -207,7 +241,7 @@ export class TeeService {
             stableBps: body.stableBps,
             topAssets: body.topAssets,
             policyVersion: body.policyVersion,
-            escrowBlob: JSON.stringify(escrowBlob),
+            escrowBlob: escrowForWrite,
             verifiedAt: new Date(body.createdAt),
             expiresAt: new Date(body.expiresAt),
           },
@@ -219,7 +253,7 @@ export class TeeService {
             stableBps: body.stableBps,
             topAssets: body.topAssets,
             policyVersion: body.policyVersion,
-            escrowBlob: JSON.stringify(escrowBlob),
+            escrowBlob: escrowForWrite,
             verifiedAt: new Date(body.createdAt),
             expiresAt: new Date(body.expiresAt),
           },
@@ -235,75 +269,92 @@ export class TeeService {
         });
       };
 
-      const assertMine = async (identityNullifier: string) => {
-        const row = await tx.teeIdentity.findUnique({ where: { identityNullifier } });
-        if (!row || row.userId !== userId) {
-          throw new BadRequestException("Wallet set belongs to another account");
+      if (isAddition) {
+        const previous = body.previousIdentityNullifier!;
+        const mine = await tx.teeIdentity.findUnique({ where: { userId } });
+        if (!mine || mine.identityNullifier !== previous) {
+          throw new BadRequestException("No matching verified identity for this addition");
         }
-      };
-
-      if (removed.length > 0) {
-        // Removal: every previously enrolled wallet must be accounted for.
-        if (ownerIdentities.size !== 1) {
-          throw new BadRequestException("Wallet set transition conflicts with enrolled accounts");
-        }
-        const previous = [...ownerIdentities][0]!;
-        const previousEntries = ownerRows.map((r) => ({
-          family: r.family as "evm" | "solana",
-          walletNullifier: r.walletNullifier,
-        }));
-        if (walletSetNullifier(previousEntries) !== previous) {
+        const previousRows = await tx.teeWalletBinding.findMany({
+          where: { identityNullifier: previous },
+        });
+        const previousIds = new Set(previousRows.map((r) => r.walletNullifier));
+        if (previousRows.length === 0 || previousIds.size !== previousRows.length) {
           throw new BadRequestException("Stored wallet set is incoherent");
         }
-        await assertMine(previous);
-        const union = new Set(allIds);
-        const previousIds = previousEntries.map((e) => e.walletNullifier);
-        if (previousIds.some((id) => !union.has(id))) {
-          throw new BadRequestException("Transition omits an enrolled wallet");
+        // Every stored wallet must remain; the new set is a strict superset.
+        for (const id of previousIds) {
+          if (!keptIds.includes(id)) {
+            throw new BadRequestException("Transition drops a stored wallet");
+          }
         }
-        if (removedIds.some((id) => !previousIds.includes(id))) {
-          throw new BadRequestException("Removal of a wallet that was never enrolled");
+        const derivedAdded = keptIds.filter((id) => !previousIds.has(id));
+        const claimed = new Set(addedIds);
+        if (
+          derivedAdded.length === 0 ||
+          derivedAdded.length !== claimed.size ||
+          derivedAdded.some((id) => !claimed.has(id))
+        ) {
+          throw new BadRequestException("Signed added-wallet set does not match the transition");
         }
-        if (previous !== body.identityNullifier) {
-          await writeIdentity(body.identityNullifier);
-          await tx.teeWalletBinding.deleteMany({ where: { identityNullifier: previous } });
-          await tx.teeIdentity.delete({ where: { identityNullifier: previous } });
-        } else {
-          await writeIdentity(previous);
+        // One wallet, one account: an added wallet must be unowned elsewhere.
+        const taken = await tx.teeWalletBinding.findMany({
+          where: { walletNullifier: { in: derivedAdded } },
+        });
+        if (taken.length > 0) {
+          throw new BadRequestException("An added wallet is already enrolled");
         }
-      } else if (ownerIdentities.size === 0) {
-        // Fresh set: if the user already has a different identity, the new
-        // proof replaces it (re-prove is the account's own choice).
-        if (mine && mine.identityNullifier !== body.identityNullifier) {
-          await tx.teeWalletBinding.deleteMany({
-            where: { identityNullifier: mine.identityNullifier },
-          });
-          await tx.teeIdentity.delete({ where: { identityNullifier: mine.identityNullifier } });
-        }
+        await tx.teeWalletBinding.deleteMany({ where: { identityNullifier: previous } });
+        await tx.teeIdentity.delete({ where: { identityNullifier: previous } });
         await writeIdentity(body.identityNullifier);
-      } else if (ownerIdentities.size === 1) {
-        const previous = [...ownerIdentities][0]!;
-        if (previous === body.identityNullifier) {
-          await writeIdentity(previous);
-        } else {
-          const previousEntries = ownerRows.map((r) => ({
-            family: r.family as "evm" | "solana",
-            walletNullifier: r.walletNullifier,
-          }));
-          if (walletSetNullifier(previousEntries) !== previous) {
-            throw new BadRequestException("Stored wallet set is incoherent");
+      } else {
+        const ownerRows = await tx.teeWalletBinding.findMany({
+          where: { walletNullifier: { in: keptIds } },
+        });
+        const ownerIdentities = new Set(ownerRows.map((r) => r.identityNullifier));
+        const mine = await tx.teeIdentity.findUnique({ where: { userId } });
+
+        const assertMine = async (identityNullifier: string) => {
+          const row = await tx.teeIdentity.findUnique({ where: { identityNullifier } });
+          if (!row || row.userId !== userId) {
+            throw new BadRequestException("Wallet set belongs to another account");
           }
-          await assertMine(previous);
-          const keptSet = new Set(keptIds);
-          if (previousEntries.some((e) => !keptSet.has(e.walletNullifier))) {
-            throw new BadRequestException("Transition drops a wallet without consent");
+        };
+
+        if (ownerIdentities.size === 0) {
+          // Fresh set: if the user already has a different identity, the new
+          // proof replaces it (re-prove is the account's own choice).
+          if (mine && mine.identityNullifier !== body.identityNullifier) {
+            await tx.teeWalletBinding.deleteMany({
+              where: { identityNullifier: mine.identityNullifier },
+            });
+            await tx.teeIdentity.delete({ where: { identityNullifier: mine.identityNullifier } });
           }
           await writeIdentity(body.identityNullifier);
-          await tx.teeWalletBinding.deleteMany({ where: { identityNullifier: previous } });
-          await tx.teeIdentity.delete({ where: { identityNullifier: previous } });
+        } else if (ownerIdentities.size === 1) {
+          const previous = [...ownerIdentities][0]!;
+          if (previous === body.identityNullifier) {
+            await writeIdentity(previous);
+          } else {
+            const previousRows = ownerRows.map((r) => ({
+              family: r.family as "evm" | "solana",
+              walletNullifier: r.walletNullifier,
+            }));
+            if (walletSetNullifier(previousRows) !== previous) {
+              throw new BadRequestException("Stored wallet set is incoherent");
+            }
+            await assertMine(previous);
+            const keptSet = new Set(keptIds);
+            if (previousRows.some((e) => !keptSet.has(e.walletNullifier))) {
+              throw new BadRequestException("Transition drops a wallet without consent");
+            }
+            await writeIdentity(body.identityNullifier);
+            await tx.teeWalletBinding.deleteMany({ where: { identityNullifier: previous } });
+            await tx.teeIdentity.delete({ where: { identityNullifier: previous } });
+          }
+        } else {
+          throw new BadRequestException("Wallets belong to multiple accounts");
         }
-      } else {
-        throw new BadRequestException("Wallets belong to multiple accounts");
       }
 
       await this.syncEligibilityCache(tx, userId, body.tier);
@@ -368,6 +419,11 @@ export class TeeService {
       stale,
       verified,
     };
+  }
+
+  /** Count legacy wallet rows for the no-tier eligibility fallback. */
+  async countWallets(userId: string): Promise<number> {
+    return this.prisma.wallet.count({ where: { userId } });
   }
 
   /** Read the stored view without triggering a recheck. */

@@ -24,11 +24,12 @@ export class PlayGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly presence: PresenceService,
   ) {}
 
-  handleConnection(socket: Socket) {
+  async handleConnection(socket: Socket) {
+    // async: token validation also checks password-change invalidation
     const token = (socket.handshake.auth as { token?: unknown }).token;
     if (typeof token !== "string") return socket.disconnect();
     try {
-      const userId = this.auth.validateToken(token).userId;
+      const userId = (await this.auth.validateToken(token)).userId;
       socket.data.userId = userId;
       socket.join(`user:${userId}`);
       this.presence.markOnline(userId, socket.id);
