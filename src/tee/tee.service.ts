@@ -215,22 +215,23 @@ export class TeeService {
       );
     }
 
-    const removed = body.removedWalletNullifiers ?? [];
-    if (removed.length > 0) {
-      // The product is add-only; a removal result is never persisted.
-      throw new BadRequestException("Wallet removal is not supported");
-    }
     const kept = body.walletNullifiers;
     const keptIds = kept.map((w) => w.walletNullifier);
     const addedIds = (body.addedWalletNullifiers ?? []).map((w) => w.walletNullifier);
+    const removed = body.removedWalletNullifiers ?? [];
+    const removedIds = removed.map((w) => w.walletNullifier);
     if (keptIds.length === 0) throw new BadRequestException("Empty wallet set");
     const labels = new Map(kept.map((w) => [w.walletNullifier, w.label ?? null]));
-    const isAddition = body.previousIdentityNullifier !== undefined;
-    if (isAddition && !body.nextEscrowBlob) {
-      throw new BadRequestException("Addition result carries no escrow blob");
+    const isAddition = body.addedWalletNullifiers !== undefined;
+    const isRemoval = removedIds.length > 0;
+    if (isAddition && isRemoval) {
+      throw new BadRequestException("A transition cannot add and remove wallets at once");
     }
-    // An addition stores the enclave-produced merged blob; an establishment
-    // stores the client-produced blob.
+    if ((isAddition || isRemoval) && (!body.previousIdentityNullifier || !body.nextEscrowBlob)) {
+      throw new BadRequestException("Transition result is missing its previous identity or escrow blob");
+    }
+    // Additions/removals store the enclave-produced blob; establishments store
+    // the client-produced blob.
     const escrowForWrite = JSON.stringify(body.nextEscrowBlob ?? escrowBlob);
 
     const persisted = await this.prisma.$transaction(async (tx) => {
@@ -272,7 +273,39 @@ export class TeeService {
         });
       };
 
-      if (isAddition) {
+      if (isRemoval) {
+        const previous = body.previousIdentityNullifier!;
+        const mine = await tx.teeIdentity.findUnique({ where: { userId } });
+        if (!mine || mine.identityNullifier !== previous) {
+          throw new BadRequestException("No matching verified identity for this removal");
+        }
+        const previousRows = await tx.teeWalletBinding.findMany({
+          where: { identityNullifier: previous },
+        });
+        const previousIds = new Set(previousRows.map((r) => r.walletNullifier));
+        if (previousRows.length === 0 || previousIds.size !== previousRows.length) {
+          throw new BadRequestException("Stored wallet set is incoherent");
+        }
+        const keptSet = new Set(keptIds);
+        const removedSet = new Set(removedIds);
+        if (keptSet.size !== keptIds.length || removedSet.size !== removedIds.length) {
+          throw new BadRequestException("Wallet set contains duplicates");
+        }
+        if (keptIds.some((id) => removedSet.has(id))) {
+          throw new BadRequestException("A wallet cannot be kept and removed");
+        }
+        // Exact partition: stored = kept ∪ removed.
+        const union = new Set([...keptIds, ...removedIds]);
+        if (union.size !== previousIds.size || [...previousIds].some((id) => !union.has(id))) {
+          throw new BadRequestException("Removal omits an enrolled wallet");
+        }
+        if (removedIds.some((id) => !previousIds.has(id))) {
+          throw new BadRequestException("Removal of a wallet that was never enrolled");
+        }
+        await tx.teeWalletBinding.deleteMany({ where: { identityNullifier: previous } });
+        await tx.teeIdentity.delete({ where: { identityNullifier: previous } });
+        await writeIdentity(body.identityNullifier);
+      } else if (isAddition) {
         const previous = body.previousIdentityNullifier!;
         const mine = await tx.teeIdentity.findUnique({ where: { userId } });
         if (!mine || mine.identityNullifier !== previous) {
