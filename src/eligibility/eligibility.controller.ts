@@ -15,6 +15,8 @@ export class EligibilityController {
 
   @Post("check")
   check(@CurrentUser() userId: string) {
+    // Tee path always recomputes (enclave recheck); the old force flag only
+    // controlled the removed RPC balance cache and no longer applies.
     return this.eligibility.check(userId);
   }
 }
