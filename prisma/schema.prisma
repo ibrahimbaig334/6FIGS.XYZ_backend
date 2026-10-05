@@ -62,7 +62,6 @@ model EligibilityCache {
   userId     String   @id
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   tier       String
-  assetPct   Json?
   verifiedAt DateTime @default(now())
   expiresAt  DateTime
 }
@@ -79,7 +78,6 @@ model TeeIdentity {
   tier              Int
   tierLabel         String
   portfolioBand     String
-  stableBps         Int
   topAssets         Json
   policyVersion     String
   escrowBlob        String

@@ -1056,15 +1056,15 @@ function sock(token) {
   r = await req("GET", "/play/friends", { token: tokenA });
   const bf = r.data.items.find((f) => f.id === B.userId);
   check(
-    "VISIBLE friend shows assetPct",
-    !!bf && bf.assetPct !== null && typeof bf.assetPct === "object",
+    "friend carries no allocation percentages",
+    !!bf && bf.assetPct === undefined && bf.tier !== undefined,
     JSON.stringify(bf),
   );
   r = await req("GET", "/play/friends", { token: B.token });
   const af = r.data.items.find((f) => f.id === userA);
   check(
-    "HIDDEN friend hides assetPct",
-    !!af && af.assetPct === null,
+    "friend hides allocation regardless of visibility",
+    !!af && af.assetPct === undefined,
     JSON.stringify(af),
   );
   r = await req("GET", "/play/friends?sort=name&order=asc&limit=1&page=1", {

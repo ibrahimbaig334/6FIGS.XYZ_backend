@@ -36,7 +36,6 @@ export interface TeeIdentityView {
   tierId: number;
   portfolioBand: string;
   topAssets: string[];
-  stableBps: number;
   wallets: TeeWalletView[];
   walletCount: number;
   verifiedAt: string;
@@ -72,6 +71,16 @@ export class TeeService {
   }
 
   privateVerifierConfig() {
+    const configuredProviders = splitList(
+      process.env.SIXFIGS_REQUIRED_ESCROW_KEY_PROVIDERS,
+    );
+    // Production defaults to KMS-only unless the operator overrides it.
+    const requiredEscrowKeyProviders =
+      configuredProviders.length > 0
+        ? configuredProviders
+        : process.env.NODE_ENV === "production"
+          ? ["kms"]
+          : [];
     return {
       audience: "6figs-registration",
       policy: {
@@ -83,12 +92,8 @@ export class TeeService {
         ...(splitList(process.env.SIXFIGS_REQUIRED_SUPPORT_ATTRS).length
           ? { requiredSupportAttributes: splitList(process.env.SIXFIGS_REQUIRED_SUPPORT_ATTRS) }
           : {}),
-        ...(splitList(process.env.SIXFIGS_REQUIRED_ESCROW_KEY_PROVIDERS).length
-          ? {
-              requiredEscrowKeyProviders: splitList(
-                process.env.SIXFIGS_REQUIRED_ESCROW_KEY_PROVIDERS,
-              ),
-            }
+        ...(requiredEscrowKeyProviders.length > 0
+          ? { requiredEscrowKeyProviders }
           : {}),
       },
       allowMock: process.env.SIXFIGS_ALLOW_MOCK === "1",
@@ -238,7 +243,6 @@ export class TeeService {
             tier: body.tier,
             tierLabel: this.tierLabel(body.tier),
             portfolioBand: body.portfolioBand,
-            stableBps: body.stableBps,
             topAssets: body.topAssets,
             policyVersion: body.policyVersion,
             escrowBlob: escrowForWrite,
@@ -250,7 +254,6 @@ export class TeeService {
             tier: body.tier,
             tierLabel: this.tierLabel(body.tier),
             portfolioBand: body.portfolioBand,
-            stableBps: body.stableBps,
             topAssets: body.topAssets,
             policyVersion: body.policyVersion,
             escrowBlob: escrowForWrite,
@@ -394,7 +397,6 @@ export class TeeService {
     tier: number;
     tierLabel: string;
     portfolioBand: string;
-    stableBps: number;
     topAssets: unknown;
     verifiedAt: Date;
     expiresAt: Date;
@@ -411,7 +413,6 @@ export class TeeService {
       tierId: identity.tier,
       portfolioBand: identity.portfolioBand,
       topAssets: Array.isArray(identity.topAssets) ? (identity.topAssets as string[]) : [],
-      stableBps: identity.stableBps,
       wallets: identity.bindings.map((b) => ({ family: b.family, label: b.label })),
       walletCount: identity.bindings.length,
       verifiedAt: identity.verifiedAt.toISOString(),
@@ -493,7 +494,6 @@ export class TeeService {
             tier: body.tier,
             tierLabel: this.tierLabel(body.tier),
             portfolioBand: body.portfolioBand,
-            stableBps: body.stableBps,
             topAssets: body.topAssets,
             policyVersion: body.policyVersion,
             verifiedAt: new Date(body.createdAt),
