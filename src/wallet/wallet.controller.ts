@@ -121,4 +121,11 @@ export class WalletController {
   remove(@CurrentUser() userId: string, @Param("id") id: string) {
     return this.wallets.remove(userId, id);
   }
+
+  /** Disconnect every wallet (wipes attested verification). Idempotent. */
+  @Delete()
+  @UseGuards(JwtGuard)
+  removeAll(@CurrentUser() userId: string) {
+    return this.wallets.removeAll(userId);
+  }
 }

@@ -23,8 +23,13 @@ import { CacheService } from "../common/cache.service";
 const NONCE_TTL_MS = 5 * 60 * 1000;
 const RECHECK_LOCK_MS = 60_000;
 const DEFAULT_RECHECK_TTL_MS = 3_600_000;
+/** Interactive-tx limits: the DB is remote (local backend → Render
+ *  Postgres), so the Prisma 5s default can expire mid-register. */
+const TX_OPTS = { timeout: 30_000, maxWait: 15_000 };
 
 export interface TeeWalletView {
+  /** Opaque wallet pseudonym (keyed hash) — stable id for removal, reveals nothing. */
+  id: string;
   family: string;
   label: string | null;
 }
@@ -234,7 +239,7 @@ export class TeeService {
     // the client-produced blob.
     const escrowForWrite = JSON.stringify(body.nextEscrowBlob ?? escrowBlob);
 
-    const persisted = await this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx) => {
       const writeIdentity = async (identityNullifier: string) => {
         await tx.teeIdentity.upsert({
           where: { identityNullifier },
@@ -338,7 +343,7 @@ export class TeeService {
           where: { walletNullifier: { in: derivedAdded } },
         });
         if (taken.length > 0) {
-          throw new BadRequestException("An added wallet is already enrolled");
+          throw new BadRequestException("That wallet is already connected to an account");
         }
         await tx.teeWalletBinding.deleteMany({ where: { identityNullifier: previous } });
         await tx.teeIdentity.delete({ where: { identityNullifier: previous } });
@@ -376,14 +381,20 @@ export class TeeService {
               family: r.family as "evm" | "solana",
               walletNullifier: r.walletNullifier,
             }));
-            if (walletSetNullifier(previousRows) !== previous) {
-              throw new BadRequestException("Stored wallet set is incoherent");
-            }
-            await assertMine(previous);
             const keptSet = new Set(keptIds);
             if (previousRows.some((e) => !keptSet.has(e.walletNullifier))) {
               throw new BadRequestException("Transition drops a wallet without consent");
             }
+            // A tier zeroed by disconnects may be re-established over any
+            // subset of its remaining wallets; otherwise the stored set
+            // must match exactly.
+            if (
+              walletSetNullifier(previousRows) !== previous &&
+              !(mine && mine.tier === 0)
+            ) {
+              throw new BadRequestException("Stored wallet set is incoherent");
+            }
+            await assertMine(previous);
             await writeIdentity(body.identityNullifier);
             await tx.teeWalletBinding.deleteMany({ where: { identityNullifier: previous } });
             await tx.teeIdentity.delete({ where: { identityNullifier: previous } });
@@ -394,12 +405,14 @@ export class TeeService {
       }
 
       await this.syncEligibilityCache(tx, userId, body.tier);
-      return tx.teeIdentity.findUniqueOrThrow({
-        where: { identityNullifier: body.identityNullifier },
-        include: { bindings: { orderBy: { createdAt: "asc" } } },
-      });
-    });
+      // Writes only — the final read happens outside the transaction so a
+      // slow/cold DB can never surface as "Transaction already closed".
+    }, TX_OPTS);
 
+    const persisted = await this.prisma.teeIdentity.findUniqueOrThrow({
+      where: { identityNullifier: body.identityNullifier },
+      include: { bindings: { orderBy: { createdAt: "asc" } } },
+    });
     return this.view(persisted);
   }
 
@@ -433,7 +446,7 @@ export class TeeService {
     topAssets: unknown;
     verifiedAt: Date;
     expiresAt: Date;
-    bindings: Array<{ family: string; label: string | null }>;
+    bindings: Array<{ walletNullifier: string; family: string; label: string | null }>;
   }): TeeIdentityView {
     const verifiedAt = identity.verifiedAt.getTime();
     const expiresAt = identity.expiresAt.getTime();
@@ -446,7 +459,7 @@ export class TeeService {
       tierId: identity.tier,
       portfolioBand: identity.portfolioBand,
       topAssets: Array.isArray(identity.topAssets) ? (identity.topAssets as string[]) : [],
-      wallets: identity.bindings.map((b) => ({ family: b.family, label: b.label })),
+      wallets: identity.bindings.map((b) => ({ id: b.walletNullifier, family: b.family, label: b.label })),
       walletCount: identity.bindings.length,
       verifiedAt: identity.verifiedAt.toISOString(),
       expiresAt: identity.expiresAt.toISOString(),
@@ -520,7 +533,7 @@ export class TeeService {
         throw new BadRequestException("Recheck returned a different wallet set");
       }
 
-      const updated = await this.prisma.$transaction(async (tx) => {
+      await this.prisma.$transaction(async (tx) => {
         await tx.teeIdentity.update({
           where: { identityNullifier: stored.identityNullifier },
           data: {
@@ -540,10 +553,10 @@ export class TeeService {
           });
         }
         await this.syncEligibilityCache(tx, userId, body.tier);
-        return tx.teeIdentity.findUniqueOrThrow({
-          where: { identityNullifier: stored.identityNullifier },
-          include: { bindings: { orderBy: { createdAt: "asc" } } },
-        });
+      }, TX_OPTS);
+      const updated = await this.prisma.teeIdentity.findUniqueOrThrow({
+        where: { identityNullifier: stored.identityNullifier },
+        include: { bindings: { orderBy: { createdAt: "asc" } } },
       });
       return this.view(updated);
     } catch (error) {

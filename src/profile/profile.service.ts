@@ -34,8 +34,8 @@ export class ProfileService {
         emailVerified: user.emailVerifiedAt != null,
         tags: user.tags,
         eligibility: elig,
-        wallets: elig.wallets.map((w, i) => ({
-          id: `tee-${i}`,
+        wallets: elig.wallets.map((w) => ({
+          id: w.id,
           chain: w.family,
           name: w.label,
           address: null,
