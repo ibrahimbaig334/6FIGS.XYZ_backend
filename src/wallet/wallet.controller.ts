@@ -4,7 +4,6 @@ import {
   Delete,
   Get,
   Param,
-  Patch,
   Post,
   Req,
   UseGuards,
@@ -115,16 +114,6 @@ export class WalletController {
   @UseGuards(JwtGuard)
   user(@CurrentUser() userId: string) {
     return this.wallets.listMine(userId);
-  }
-
-  @Patch(":id/mock")
-  @UseGuards(JwtGuard)
-  setMock(
-    @CurrentUser() userId: string,
-    @Param("id") id: string,
-    @Body() body: { value?: number },
-  ) {
-    return this.wallets.setMock(userId, id, Number(body.value));
   }
 
   @Delete(":id")

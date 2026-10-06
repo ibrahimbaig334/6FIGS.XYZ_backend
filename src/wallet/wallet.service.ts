@@ -1,12 +1,10 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { AuthService } from "../auth/auth.service";
-import { isDevnet } from "../common/tiers";
 
 /**
  * Wallet listings never expose an address: the schema has no readable address
@@ -30,23 +28,7 @@ export class WalletService {
       name: w.name,
       address: null,
       display: w.name ?? w.chain,
-      mockUsd: w.mockUsd,
     }));
-  }
-
-  async setMock(userId: string, walletId: string, value: number) {
-    if (!isDevnet())
-      throw new ForbiddenException("Mock balances are devnet-only");
-    if (!Number.isInteger(value) || value < 0)
-      throw new BadRequestException("mockUsd must be a non-negative integer");
-    const w = await this.prisma.wallet.findUnique({ where: { id: walletId } });
-    if (!w || w.userId !== userId)
-      throw new NotFoundException("Wallet not found");
-    await this.prisma.wallet.update({
-      where: { id: walletId },
-      data: { mockUsd: value },
-    });
-    return { ok: true };
   }
 
   async remove(userId: string, walletId: string) {

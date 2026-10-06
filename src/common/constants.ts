@@ -26,10 +26,6 @@ export const NONCE_TTL_MS = 10 * 60 * 1000;
 export const JWT_EXPIRES_IN = "7d";
 export const MAX_WALLETS_PER_USER = 20;
 
-// Eligibility / balances
-export const ELIGIBILITY_TTL_MS = 24 * 3600 * 1000;
-export const BAL_CACHE_MS = 10 * 60 * 1000; // native RPC balances reusable this long
-
 // Market data
 export const TOKEN_CACHE_MS = 5 * 60 * 1000;
 export const TOKEN_PENDING_MS = 60 * 1000;

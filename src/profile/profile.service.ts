@@ -40,7 +40,6 @@ export class ProfileService {
           name: w.label,
           address: null,
           display: w.label ?? w.family.toUpperCase(),
-          mockUsd: null,
         })),
       };
     }
@@ -59,7 +58,6 @@ export class ProfileService {
         name: w.name,
         address: null,
         display: w.name ?? w.chain,
-        mockUsd: w.mockUsd,
       })),
     };
   }
