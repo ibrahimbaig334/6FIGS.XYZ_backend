@@ -400,9 +400,9 @@
   dependencies:
     "@prisma/debug" "5.19.1"
 
-"@sixfigs/tee@github:A-Mannan/6figs-tee#a803be6":
+"@sixfigs/tee@github:A-Mannan/6figs-tee#tee-2026-10-06":
   version "0.1.0"
-  resolved "https://codeload.github.com/A-Mannan/6figs-tee/tar.gz/a803be6fdb97a8241cde4ec4b046f8c5407a0fb3"
+  resolved "https://codeload.github.com/A-Mannan/6figs-tee/tar.gz/253a2b7eb18f9dd38410e8c42e7106934a03d1e2"
   dependencies:
     "@noble/curves" "^1.6.0"
     "@noble/hashes" "^1.5.0"

@@ -6,7 +6,7 @@ import {
 } from "@nestjs/common";
 import { randomBytes } from "crypto";
 import { AttestationVerifier } from "@sixfigs/tee/verifier";
-import { RecheckClient } from "@sixfigs/tee/client";
+import { RecheckClient, RemovalClient } from "@sixfigs/tee/client";
 import {
   POLICY_VERSION,
   productTierLabel,
@@ -241,11 +241,12 @@ export class TeeService {
 
     await this.prisma.$transaction(async (tx) => {
       const writeIdentity = async (identityNullifier: string) => {
+        const existing = await tx.teeIdentity.findUnique({ where: { userId } });
         await tx.teeIdentity.upsert({
-          where: { identityNullifier },
+          where: { userId },
           create: {
-            identityNullifier,
             userId,
+            identityNullifier,
             tier: body.tier,
             tierLabel: this.tierLabel(body.tier),
             portfolioBand: body.portfolioBand,
@@ -256,7 +257,7 @@ export class TeeService {
             expiresAt: new Date(body.expiresAt),
           },
           update: {
-            userId,
+            identityNullifier,
             tier: body.tier,
             tierLabel: this.tierLabel(body.tier),
             portfolioBand: body.portfolioBand,
@@ -267,6 +268,11 @@ export class TeeService {
             expiresAt: new Date(body.expiresAt),
           },
         });
+        if (existing && existing.identityNullifier !== identityNullifier) {
+          await tx.teeWalletBinding.deleteMany({
+            where: { identityNullifier: existing.identityNullifier },
+          });
+        }
         await tx.teeWalletBinding.deleteMany({ where: { identityNullifier } });
         await tx.teeWalletBinding.createMany({
           data: kept.map((w) => ({
@@ -307,8 +313,6 @@ export class TeeService {
         if (removedIds.some((id) => !previousIds.has(id))) {
           throw new BadRequestException("Removal of a wallet that was never enrolled");
         }
-        await tx.teeWalletBinding.deleteMany({ where: { identityNullifier: previous } });
-        await tx.teeIdentity.delete({ where: { identityNullifier: previous } });
         await writeIdentity(body.identityNullifier);
       } else if (isAddition) {
         const previous = body.previousIdentityNullifier!;
@@ -345,8 +349,6 @@ export class TeeService {
         if (taken.length > 0) {
           throw new BadRequestException("That wallet is already connected to an account");
         }
-        await tx.teeWalletBinding.deleteMany({ where: { identityNullifier: previous } });
-        await tx.teeIdentity.delete({ where: { identityNullifier: previous } });
         await writeIdentity(body.identityNullifier);
       } else {
         const ownerRows = await tx.teeWalletBinding.findMany({
@@ -364,13 +366,8 @@ export class TeeService {
 
         if (ownerIdentities.size === 0) {
           // Fresh set: if the user already has a different identity, the new
-          // proof replaces it (re-prove is the account's own choice).
-          if (mine && mine.identityNullifier !== body.identityNullifier) {
-            await tx.teeWalletBinding.deleteMany({
-              where: { identityNullifier: mine.identityNullifier },
-            });
-            await tx.teeIdentity.delete({ where: { identityNullifier: mine.identityNullifier } });
-          }
+          // proof replaces it (re-prove is the account's own choice);
+          // writeIdentity detaches the previous bindings.
           await writeIdentity(body.identityNullifier);
         } else if (ownerIdentities.size === 1) {
           const previous = [...ownerIdentities][0]!;
@@ -396,8 +393,6 @@ export class TeeService {
             }
             await assertMine(previous);
             await writeIdentity(body.identityNullifier);
-            await tx.teeWalletBinding.deleteMany({ where: { identityNullifier: previous } });
-            await tx.teeIdentity.delete({ where: { identityNullifier: previous } });
           }
         } else {
           throw new BadRequestException("Wallets belong to multiple accounts");
@@ -410,7 +405,7 @@ export class TeeService {
     }, TX_OPTS);
 
     const persisted = await this.prisma.teeIdentity.findUniqueOrThrow({
-      where: { identityNullifier: body.identityNullifier },
+      where: { userId },
       include: { bindings: { orderBy: { createdAt: "asc" } } },
     });
     return this.view(persisted);
@@ -566,6 +561,108 @@ export class TeeService {
         }`,
       );
       return this.view(stored);
+    } finally {
+      await this.cache.unlock(`tee:recheck:${stored.identityNullifier}`);
+    }
+  }
+
+  /**
+   * Session-authorized wallet removal. The account session is the only
+   * wallet-facing proof: the enclave detaches the wallet from the escrow blob
+   * without signatures, and the backend enforces that the returned set is
+   * exactly the stored set minus the target. Denial-only tradeoff documented
+   * in the tee SECURITY.md.
+   */
+  async removeWallet(userId: string, walletId: string): Promise<TeeIdentityView> {
+    const { enclaveUrl, verifier, expectedPolicyVersion } = this.ensureConfigured();
+    const stored = await this.prisma.teeIdentity.findUnique({
+      where: { userId },
+      include: { bindings: { orderBy: { createdAt: "asc" } } },
+    });
+    if (!stored) {
+      throw new BadRequestException("No verified wallet set for this account");
+    }
+    if (stored.bindings.length <= 1) {
+      throw new BadRequestException("Cannot remove your only wallet");
+    }
+    if (!stored.bindings.some((b) => b.walletNullifier === walletId)) {
+      throw new BadRequestException("That wallet is not connected to your account");
+    }
+
+    const locked = await this.cache.lock(
+      `tee:recheck:${stored.identityNullifier}`,
+      RECHECK_LOCK_MS,
+    );
+    if (!locked) {
+      throw new BadRequestException("A verification is already running, try again");
+    }
+    try {
+      const nonce = randomBytes(16).toString("hex");
+      const client = new RemovalClient({ enclaveUrl, policy: this.clientPolicy() });
+      const blob = JSON.parse(stored.escrowBlob) as SignedEnvelope;
+      const res = await client.remove({
+        escrowBlob: blob,
+        identityNullifier: stored.identityNullifier,
+        removeWalletNullifiers: [walletId],
+        nonce,
+      });
+      const body = await verifier.verifyRegistration(res, {
+        expectedNonce: nonce,
+        expectedPolicyVersion,
+      });
+      if (body.previousIdentityNullifier !== stored.identityNullifier) {
+        throw new BadRequestException("Removal did not extend the stored identity");
+      }
+      if (!body.nextEscrowBlob) {
+        throw new BadRequestException("Removal did not return an escrow blob");
+      }
+      const removedIds = (body.removedWalletNullifiers ?? []).map((w) => w.walletNullifier);
+      if (removedIds.length !== 1 || removedIds[0] !== walletId) {
+        throw new BadRequestException("Removal result does not detach the requested wallet");
+      }
+      const keptIds = body.walletNullifiers.map((w) => w.walletNullifier);
+      const keptSet = new Set(keptIds);
+      const expectedKept = new Set(
+        stored.bindings.map((b) => b.walletNullifier).filter((id) => id !== walletId),
+      );
+      if (
+        keptSet.size !== keptIds.length ||
+        keptSet.size !== expectedKept.size ||
+        keptIds.some((id) => !expectedKept.has(id))
+      ) {
+        throw new BadRequestException("Removal returned a different wallet set");
+      }
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.teeIdentity.update({
+          where: { userId },
+          data: {
+            identityNullifier: body.identityNullifier,
+            tier: body.tier,
+            tierLabel: this.tierLabel(body.tier),
+            portfolioBand: body.portfolioBand,
+            topAssets: body.topAssets,
+            policyVersion: body.policyVersion,
+            escrowBlob: JSON.stringify(body.nextEscrowBlob),
+            verifiedAt: new Date(body.createdAt),
+            expiresAt: new Date(body.expiresAt),
+          },
+        });
+        await tx.teeWalletBinding.delete({ where: { walletNullifier: walletId } });
+        for (const entry of body.walletNullifiers) {
+          await tx.teeWalletBinding.update({
+            where: { walletNullifier: entry.walletNullifier },
+            data: { family: entry.family, label: entry.label ?? null },
+          });
+        }
+        await this.syncEligibilityCache(tx, userId, body.tier);
+      }, TX_OPTS);
+
+      const updated = await this.prisma.teeIdentity.findUniqueOrThrow({
+        where: { userId },
+        include: { bindings: { orderBy: { createdAt: "asc" } } },
+      });
+      return this.view(updated);
     } finally {
       await this.cache.unlock(`tee:recheck:${stored.identityNullifier}`);
     }

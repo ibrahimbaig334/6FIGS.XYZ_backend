@@ -71,8 +71,8 @@ model EligibilityCache {
 // verified `SignedRegistration` payloads; read paths serve these rows without
 // any balance computation.
 model TeeIdentity {
-  identityNullifier String   @id
-  userId            String   @unique
+  userId            String   @id
+  identityNullifier String   @unique
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   tier              Int
   tierLabel         String
