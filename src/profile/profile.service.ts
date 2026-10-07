@@ -30,8 +30,7 @@ export class ProfileService {
         id: user.id,
         handle: user.handle,
         visMode: user.visMode,
-        email: user.email,
-        emailVerified: user.emailVerifiedAt != null,
+        username: user.username,
         tags: user.tags,
         eligibility: elig,
         wallets: elig.wallets.map((w) => ({
@@ -48,8 +47,7 @@ export class ProfileService {
       id: user.id,
       handle: user.handle,
       visMode: user.visMode,
-      email: user.email,
-      emailVerified: user.emailVerifiedAt != null,
+      username: user.username,
       tags: user.tags,
       eligibility: elig,
       wallets: wallets.map((w) => ({

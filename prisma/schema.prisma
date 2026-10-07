@@ -11,10 +11,9 @@ generator client {
 model User {
   id         String            @id @default(cuid())
   handle     String?           @unique
-  // Web2 account. Wallet-only accounts predate it and stay null until linked.
-  email      String?           @unique
+  // Optional device-free login. Set in profile; wallet recovery re-issues it.
+  username   String?           @unique
   passwordHash String?
-  emailVerifiedAt DateTime?
   // Bumped on password change/reset; JWT guard rejects older tokens.
   passwordChangedAt DateTime?
   visMode    String            @default("HIDDEN")
@@ -24,25 +23,23 @@ model User {
   wallets    Wallet[]
   eligibility EligibilityCache?
   teeIdentity TeeIdentity?
-  emailTokens EmailToken[]
+  recoveryWallets WalletRecovery[]
   sentMessages Message[]       @relation("SentMessages")
   roomMemberships RoomMember[]
   createdRooms Room[]          @relation("CreatedRooms")
 }
 
-// Single-use, expiring account tokens. Only the SHA-256 hash is stored; the
-// raw token exists only in the emailed link.
-model EmailToken {
-  id         String    @id @default(cuid())
-  userId     String
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  kind       String // "verify" | "reset"
-  tokenHash  String    @unique
-  expiresAt  DateTime
-  consumedAt DateTime?
-  createdAt  DateTime  @default(now())
+// Opt-in wallet recovery mapping. Created only when a user links a wallet
+// for recovery (profile): plain SHA-256 of "chain:address", so anyone who
+// HOLDS the wallet can find the account — never an address in cleartext,
+// and only for users who chose device-free login.
+model WalletRecovery {
+  addressHash String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
 
-  @@index([userId, kind])
+  @@index([userId])
 }
 
 model Wallet {

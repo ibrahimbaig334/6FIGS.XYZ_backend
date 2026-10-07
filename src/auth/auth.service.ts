@@ -193,6 +193,20 @@ export class AuthService {
   }
 
   /**
+   * Public signature check WITHOUT any session effect: proves control of
+   * the wallet right now (nonce is consumed, so no replays). Used by
+   * username recovery flows; returns the normalized address.
+   */
+  async verifyControl(
+    chain: string,
+    address: string,
+    nonce: string,
+    signature: string,
+  ): Promise<string> {
+    return this.checkSignature(chain, address, nonce, signature);
+  }
+
+  /**
    * Address-link flow. In prod every chain must use the signed verify flow;
    * in devnet plain linking stays open as a test hook (no mock UI anymore).
    */
@@ -372,15 +386,13 @@ export class AuthService {
     id: string;
     handle: string | null;
     visMode: string;
-    email?: string | null;
-    emailVerifiedAt?: Date | null;
+    username?: string | null;
   }) {
     return {
       id: user.id,
       handle: user.handle,
       visMode: user.visMode,
-      email: user.email ?? null,
-      emailVerified: user.emailVerifiedAt != null,
+      username: user.username ?? null,
     };
   }
 }

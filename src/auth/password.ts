@@ -27,12 +27,7 @@ function scryptKey(
   });
 }
 
-export const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 export const MIN_PASSWORD_LEN = 10;
-
-export function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
-}
 
 /** Stored form: scrypt$N$r$p$saltHex$derivedHex. Never the password itself. */
 export async function hashPassword(password: string): Promise<string> {

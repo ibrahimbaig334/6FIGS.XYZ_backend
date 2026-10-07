@@ -4,7 +4,6 @@ import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { PrismaModule } from "./prisma/prisma.module";
 import { CommonModule } from "./common/common.module";
-import { MailerModule } from "./mailer/mailer.module";
 import { PresenceModule } from "./presence/presence.module";
 import { AuthModule } from "./auth/auth.module";
 import { WalletModule } from "./wallet/wallet.module";
@@ -21,7 +20,6 @@ import { ChatModule } from "./chat/chat.module";
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
     CommonModule,
-    MailerModule,
     PresenceModule,
     AuthModule,
     WalletModule,
