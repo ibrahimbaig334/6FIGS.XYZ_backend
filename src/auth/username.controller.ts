@@ -44,45 +44,11 @@ export class UsernameController {
     );
   }
 
-  /** How many recovery wallets are linked. */
-  @Post("recovery-wallets")
-  @UseGuards(JwtGuard)
-  recoveryWalletCount(@CurrentUser() userId: string) {
-    return this.username.recoveryWalletCount(userId);
-  }
-
-  /** Opt a wallet into recovery (signed nonce, stores only the hash). */
-  @Post("recovery-wallet")
-  @UseGuards(JwtGuard)
-  linkRecoveryWallet(
-    @CurrentUser() userId: string,
-    @Body()
-    body: { chain?: string; address?: string; nonce?: string; signature?: string },
-  ) {
-    return this.username.linkRecoveryWallet(
-      userId,
-      String(body.chain ?? ""),
-      String(body.address ?? ""),
-      String(body.nonce ?? ""),
-      String(body.signature ?? ""),
-    );
-  }
-
-  /** Forgot username/password, step 1: sign with a linked wallet. */
-  @Post("recover")
-  recover(
-    @Body()
-    body: { chain?: string; address?: string; nonce?: string; signature?: string },
-  ) {
-    return this.username.recover(
-      String(body.chain ?? ""),
-      String(body.address ?? ""),
-      String(body.nonce ?? ""),
-      String(body.signature ?? ""),
-    );
-  }
-
-  /** Step 2: consume the recovery token to rename/reset/sign in. */
+  /**
+   * Consume a recovery token (minted by tee-identify) — rename and/or set
+   * a new password (which kills all old sessions), or neither to simply
+   * sign in.
+   */
   @Post("reset")
   reset(
     @Body() body: { token?: string; username?: string; password?: string },

@@ -3,14 +3,13 @@ import {
   ConflictException,
   HttpException,
   Injectable,
-  NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomBytes } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { CacheService } from "../common/cache.service";
-import { AuthService, addressHash } from "./auth.service";
+import { AuthService } from "./auth.service";
 import { HANDLE_PATTERN } from "../common/constants";
 import {
   MIN_PASSWORD_LEN,
@@ -22,7 +21,9 @@ import {
 // against one account is capped without locking the account itself.
 const ATTEMPT_LIMIT = 10;
 const ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
-const RECOVERY_TTL_MS = 15 * 60 * 1000;
+/** Recovery-token lifetime + cache key prefix (shared with tee identify). */
+export const RECOVERY_TTL_MS = 15 * 60 * 1000;
+export const RECOVERY_TOKEN_PREFIX = "username:rec:";
 
 /**
  * Optional device-free login. A username + password attaches to the
@@ -135,77 +136,9 @@ export class UsernameService {
     return { ok: true };
   }
 
-  /** How many recovery wallets are linked (no hashes leave the server). */
-  async recoveryWalletCount(userId: string) {
-    return {
-      count: await this.prisma.walletRecovery.count({ where: { userId } }),
-    };
-  }
-
-  /** Opt a wallet into recovery: proves control now (signed nonce), stores
-   *  only the hash — never the address. One wallet links to one account. */
-  async linkRecoveryWallet(
-    userId: string,
-    chain: string,
-    address: string,
-    nonce: string,
-    signature: string,
-  ) {
-    const normalized = await this.auth.verifyControl(
-      chain,
-      address,
-      nonce,
-      signature,
-      "recovery",
-    );
-    const hash = addressHash(chain, normalized);
-    const existing = await this.prisma.walletRecovery.findUnique({
-      where: { addressHash: hash },
-    });
-    if (existing && existing.userId !== userId)
-      throw new ConflictException("That wallet is linked to another account");
-    await this.prisma.walletRecovery.upsert({
-      where: { addressHash: hash },
-      create: { addressHash: hash, userId },
-      update: { userId },
-    });
-    return { ok: true };
-  }
-
-  /** Step 1: sign with a linked wallet → reveals the username + a
-   *  single-use recovery token. Throttled: wallet hashes are guessable. */
-  async recover(
-    chain: string,
-    address: string,
-    nonce: string,
-    signature: string,
-  ) {
-    const normalized = await this.auth.verifyControl(
-      chain,
-      address,
-      nonce,
-      signature,
-      "recovery",
-    );
-    const hash = addressHash(chain, normalized);
-    await this.throttle(`recover:${hash}`).catch(() => undefined);
-    const link = await this.prisma.walletRecovery.findUnique({
-      where: { addressHash: hash },
-    });
-    if (!link)
-      throw new NotFoundException(
-        "No account linked to this wallet — link it in profile first",
-      );
-    const user = await this.prisma.user.findUniqueOrThrow({
-      where: { id: link.userId },
-    });
-    const raw = randomBytes(32).toString("base64url");
-    await this.cache.set(`username:rec:${raw}`, { userId: user.id }, RECOVERY_TTL_MS);
-    return { username: user.username, recoveryToken: raw };
-  }
-
   /** Step 2: consume the token — rename and/or set a new password (which
-   *  kills all old sessions), or neither to simply sign in. */
+   *  kills all old sessions), or neither to simply sign in. Tokens are
+   *  minted by tee-identify: any enrolled wallet recovers, no pre-linking. */
   async reset(
     token: string,
     username?: string,
@@ -213,9 +146,9 @@ export class UsernameService {
   ) {
     const raw = String(token ?? "");
     const entry = await this.cache.get<{ userId: string }>(
-      `username:rec:${raw}`,
+      `${RECOVERY_TOKEN_PREFIX}${raw}`,
     );
-    await this.cache.del(`username:rec:${raw}`);
+    await this.cache.del(`${RECOVERY_TOKEN_PREFIX}${raw}`);
     if (!entry?.userId)
       throw new BadRequestException(
         "Recovery session expired — connect your wallet again",

@@ -1,115 +1,17 @@
 import {
-  Body,
   Controller,
   Delete,
   Get,
   Param,
-  Post,
-  Req,
   UseGuards,
 } from "@nestjs/common";
-import { AuthService } from "../auth/auth.service";
 import { CurrentUser } from "../auth/current-user";
-import { JwtGuard, AuthedRequest } from "../auth/jwt.guard";
-import { ProfileService } from "../profile/profile.service";
+import { JwtGuard } from "../auth/jwt.guard";
 import { WalletService } from "./wallet.service";
 
 @Controller("wallet")
 export class WalletController {
-  constructor(
-    private readonly auth: AuthService,
-    private readonly wallets: WalletService,
-    private readonly profile: ProfileService,
-  ) {}
-
-  @Post("nonce")
-  nonce(@Body() body: { chain?: string; address?: string; purpose?: string }) {
-    return this.auth.nonceFor(
-      String(body.chain ?? ""),
-      String(body.address ?? ""),
-      String(body.purpose ?? "login"),
-    );
-  }
-
-  @Post("verify")
-  async verify(
-    @Req() req: AuthedRequest,
-    @Body()
-    body: {
-      chain?: string;
-      address?: string;
-      nonce?: string;
-      signature?: string;
-      walletName?: string;
-    },
-  ) {
-    return this.withProfile(
-      this.auth.verifyAndLogin(
-        String(body.chain ?? ""),
-        String(body.address ?? ""),
-        String(body.nonce ?? ""),
-        String(body.signature ?? ""),
-        await this.auth.userIdFromHeader(req.headers.authorization),
-        typeof body.walletName === "string" ? body.walletName : null,
-      ),
-    );
-  }
-
-  /**
-   * Add-wallet flow for logged-in sessions. Can never create or switch
-   * accounts — the address attaches to YOUR account or is rejected.
-   */
-  @Post("add")
-  @UseGuards(JwtGuard)
-  add(
-    @CurrentUser() userId: string,
-    @Body()
-    body: {
-      chain?: string;
-      address?: string;
-      nonce?: string;
-      signature?: string;
-      walletName?: string;
-    },
-  ) {
-    return this.withProfile(
-      this.auth.verifyAndAttach(
-        userId,
-        String(body.chain ?? ""),
-        String(body.address ?? ""),
-        String(body.nonce ?? ""),
-        String(body.signature ?? ""),
-        typeof body.walletName === "string" ? body.walletName : null,
-      ),
-    );
-  }
-
-  /**
-   * Login responses carry the full profile (eligibility included) so the
-   * frontend can render the tier badge immediately — no follow-up
-   * /profile/user fetch in the connect critical path.
-   */
-  private async withProfile(
-    p: Promise<{ token: string; user: { id: string } }>,
-  ) {
-    const res = await p;
-    const profile = await this.profile.me(res.user.id);
-    return { ...res, profile };
-  }
-
-  @Post("link")
-  async link(
-    @Req() req: AuthedRequest,
-    @Body() body: { chain?: string; address?: string; walletName?: string },
-  ) {
-    const userId = await this.auth.userIdFromHeader(req.headers.authorization);
-    return this.auth.linkWallet(
-      userId,
-      String(body.chain ?? ""),
-      String(body.address ?? ""),
-      typeof body.walletName === "string" ? body.walletName : null,
-    );
-  }
+  constructor(private readonly wallets: WalletService) {}
 
   @Get("user")
   @UseGuards(JwtGuard)

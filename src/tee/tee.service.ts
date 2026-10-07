@@ -2,8 +2,10 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { randomBytes } from "crypto";
 import { AttestationVerifier } from "@sixfigs/tee/verifier";
 import { RecheckClient, RemovalClient } from "@sixfigs/tee/client";
@@ -19,16 +21,25 @@ import type {
 } from "@sixfigs/tee/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { CacheService } from "../common/cache.service";
+import { AuthService } from "../auth/auth.service";
+import {
+  RECOVERY_TOKEN_PREFIX,
+  RECOVERY_TTL_MS,
+} from "../auth/username.service";
 
-const NONCE_TTL_MS = 5 * 60 * 1000;
+const NONCE_TTL_MS = 15 * 60 * 1000;
 const RECHECK_LOCK_MS = 60_000;
 const DEFAULT_RECHECK_TTL_MS = 3_600_000;
 /** Interactive-tx limits: the DB is remote (local backend → Render
  *  Postgres), so the Prisma 5s default can expire mid-register. */
 const TX_OPTS = { timeout: 30_000, maxWait: 15_000 };
+/** Attested-proof freshness: replaces pre-issued nonces for sessionless
+ *  flows (nothing to lose between issue and submit, no expiry pressure on
+ *  the user, immune to cache restarts). */
+const REPLAY_WINDOW_MS = 30 * 60 * 1000;
 
 export interface TeeWalletView {
-  /** Opaque wallet pseudonym (keyed hash) — stable id for removal, reveals nothing. */
+  /** Opaque wallet pseudonym (keyed hash) â€” stable id for removal, reveals nothing. */
   id: string;
   family: string;
   label: string | null;
@@ -69,6 +80,7 @@ export class TeeService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
+    private readonly auth: AuthService,
   ) {}
 
   private enclaveUrl(): string {
@@ -169,11 +181,32 @@ export class TeeService {
     };
   }
 
-  /** Consume a nonce; consumed or unknown nonces fail closed. */
-  async consumeNonce(nonce: string): Promise<string> {
-    const entry = await this.cache.get<{ userId: string }>(`tee:nonce:${nonce}`);
+  /**
+   * First-submitter-wins claim for sessionless submits. Pre-issued nonces
+   * have a fatal flaw here: anything that loses the store entry between
+   * issue and submit (restart, eviction, race) turns into a user-facing
+   * 401 with no recovery. Claiming atomically at submit leaves no window
+   * at all; the attested createdAt below bounds the replay horizon instead.
+   */
+  private async claimNonce(nonce: string): Promise<void> {
+    const fresh = await this.cache.lock(
+      `tee:nonce:used:${nonce}`,
+      REPLAY_WINDOW_MS,
+      0,
+    );
+    if (!fresh) {
+      throw new UnauthorizedException("Proof already used — reconnect and try again");
+    }
+  }
+
+  /** Consume a nonce; consumed or unknown nonces fail closed. Null user = public (login/identify) nonce. */
+  async consumeNonce(nonce: string): Promise<string | null> {
+    const entry = await this.cache.get<{ userId: string | null }>(`tee:nonce:${nonce}`);
     await this.cache.del(`tee:nonce:${nonce}`);
-    if (!entry?.userId) {
+    if (!entry || entry.userId === undefined) {
+      this.log.warn(
+        `tee nonce consume failed (missing): nonce=${String(nonce).slice(0, 8)}`,
+      );
       throw new UnauthorizedException("Registration nonce expired or invalid");
     }
     return entry.userId;
@@ -187,65 +220,60 @@ export class TeeService {
   /**
    * Verify a submitted registration and persist the transition. The nonce is
    * consumed first so a double submit fails closed before attestation work.
+   * A null userId means sessionless wallet login: the nonce must be public,
+   * the result must establish a full set, and the owner is resolved (or
+   * created) from the attested wallets.
    */
   async register(
-    userId: string,
+    userId: string | null,
     signed: SignedRegistration,
     escrowBlob?: SignedEnvelope,
-  ): Promise<TeeIdentityView> {
-    const { verifier, expectedPolicyVersion } = this.ensureConfigured();
+  ): Promise<{ view: TeeIdentityView; userId: string }> {
     if (!signed || typeof signed !== "object" || !signed.body || typeof signed.body.nonce !== "string") {
       throw new BadRequestException("Malformed signed registration");
     }
-    // Additions carry the merged blob inside the signed result; establishments
-    // carry the client-produced blob as a separate field.
-    const establishment = signed.body.previousIdentityNullifier === undefined;
-    if (establishment && (!escrowBlob || escrowBlob.v !== 1)) {
-      throw new BadRequestException("Malformed escrow blob");
+    if (userId === null) {
+      // Sessionless: atomic first-submitter-wins claim (no pre-issued entry).
+      await this.claimNonce(signed.body.nonce);
+    } else {
+      const boundUser = await this.consumeNonce(signed.body.nonce);
+      if (boundUser !== userId) {
+        throw new UnauthorizedException("Registration belongs to another session");
+      }
     }
-    const boundUser = await this.consumeNonce(signed.body.nonce);
-    if (boundUser !== userId) {
-      throw new UnauthorizedException("Registration belongs to another session");
+    const v = await this.verifySigned(signed, escrowBlob);
+    const {
+      body,
+      kept,
+      keptIds,
+      addedIds,
+      removed,
+      removedIds,
+      labels,
+      isAddition,
+      isRemoval,
+      escrowForWrite,
+    } = v;
+    const effectiveUserId =
+      userId ?? (await this.resolveOrCreateLoginUser(keptIds));
+    // Freshness from the attested creation time (not wall-clock games):
+    // proofs older than the replay window are dead, claimed or not.
+    const createdMs =
+      typeof v.body.createdAt === "number"
+        ? v.body.createdAt
+        : Date.parse(v.body.createdAt);
+    if (Number.isNaN(createdMs) || Date.now() - createdMs > REPLAY_WINDOW_MS) {
+      throw new BadRequestException("Proof is stale — reconnect and try again");
     }
 
-    let body: RegistrationResultBody;
     try {
-      body = await verifier.verifyRegistration(signed, {
-        expectedNonce: signed.body.nonce,
-        expectedPolicyVersion,
-      });
-    } catch (error) {
-      throw new BadRequestException(
-        error instanceof Error ? `Tee verification failed: ${error.message}` : "Tee verification failed",
-      );
-    }
-
-    const kept = body.walletNullifiers;
-    const keptIds = kept.map((w) => w.walletNullifier);
-    const addedIds = (body.addedWalletNullifiers ?? []).map((w) => w.walletNullifier);
-    const removed = body.removedWalletNullifiers ?? [];
-    const removedIds = removed.map((w) => w.walletNullifier);
-    if (keptIds.length === 0) throw new BadRequestException("Empty wallet set");
-    const labels = new Map(kept.map((w) => [w.walletNullifier, w.label ?? null]));
-    const isAddition = body.addedWalletNullifiers !== undefined;
-    const isRemoval = removedIds.length > 0;
-    if (isAddition && isRemoval) {
-      throw new BadRequestException("A transition cannot add and remove wallets at once");
-    }
-    if ((isAddition || isRemoval) && (!body.previousIdentityNullifier || !body.nextEscrowBlob)) {
-      throw new BadRequestException("Transition result is missing its previous identity or escrow blob");
-    }
-    // Additions/removals store the enclave-produced blob; establishments store
-    // the client-produced blob.
-    const escrowForWrite = JSON.stringify(body.nextEscrowBlob ?? escrowBlob);
-
-    await this.prisma.$transaction(async (tx) => {
+      await this.prisma.$transaction(async (tx) => {
       const writeIdentity = async (identityNullifier: string) => {
-        const existing = await tx.teeIdentity.findUnique({ where: { userId } });
+        const existing = await tx.teeIdentity.findUnique({ where: { userId: effectiveUserId } });
         await tx.teeIdentity.upsert({
-          where: { userId },
+          where: { userId: effectiveUserId },
           create: {
-            userId,
+            userId: effectiveUserId,
             identityNullifier,
             tier: body.tier,
             tierLabel: this.tierLabel(body.tier),
@@ -286,7 +314,7 @@ export class TeeService {
 
       if (isRemoval) {
         const previous = body.previousIdentityNullifier!;
-        const mine = await tx.teeIdentity.findUnique({ where: { userId } });
+        const mine = await tx.teeIdentity.findUnique({ where: { userId: effectiveUserId } });
         if (!mine || mine.identityNullifier !== previous) {
           throw new BadRequestException("No matching verified identity for this removal");
         }
@@ -305,7 +333,7 @@ export class TeeService {
         if (keptIds.some((id) => removedSet.has(id))) {
           throw new BadRequestException("A wallet cannot be kept and removed");
         }
-        // Exact partition: stored = kept ∪ removed.
+        // Exact partition: stored = kept âˆª removed.
         const union = new Set([...keptIds, ...removedIds]);
         if (union.size !== previousIds.size || [...previousIds].some((id) => !union.has(id))) {
           throw new BadRequestException("Removal omits an enrolled wallet");
@@ -316,7 +344,7 @@ export class TeeService {
         await writeIdentity(body.identityNullifier);
       } else if (isAddition) {
         const previous = body.previousIdentityNullifier!;
-        const mine = await tx.teeIdentity.findUnique({ where: { userId } });
+        const mine = await tx.teeIdentity.findUnique({ where: { userId: effectiveUserId } });
         if (!mine || mine.identityNullifier !== previous) {
           throw new BadRequestException("No matching verified identity for this addition");
         }
@@ -355,14 +383,14 @@ export class TeeService {
           where: { walletNullifier: { in: keptIds } },
         });
         const ownerIdentities = new Set(ownerRows.map((r) => r.identityNullifier));
-        const mine = await tx.teeIdentity.findUnique({ where: { userId } });
+        const mine = await tx.teeIdentity.findUnique({ where: { userId: effectiveUserId } });
 
-        const assertMine = async (identityNullifier: string) => {
-          const row = await tx.teeIdentity.findUnique({ where: { identityNullifier } });
-          if (!row || row.userId !== userId) {
-            throw new BadRequestException("Wallet set belongs to another account");
-          }
-        };
+          const assertMine = async (identityNullifier: string) => {
+            const row = await tx.teeIdentity.findUnique({ where: { identityNullifier } });
+            if (!row || row.userId !== effectiveUserId) {
+              throw new BadRequestException("Wallet set belongs to another account");
+            }
+          };
 
         if (ownerIdentities.size === 0) {
           // Fresh set: if the user already has a different identity, the new
@@ -371,6 +399,10 @@ export class TeeService {
           await writeIdentity(body.identityNullifier);
         } else if (ownerIdentities.size === 1) {
           const previous = [...ownerIdentities][0]!;
+          // Ownership FIRST â€” before any write in either sub-branch. Without
+          // this, proving a set enrolled elsewhere crashes on the unique
+          // constraint instead of failing closed with a 400.
+          await assertMine(previous);
           if (previous === body.identityNullifier) {
             await writeIdentity(previous);
           } else {
@@ -391,7 +423,6 @@ export class TeeService {
             ) {
               throw new BadRequestException("Stored wallet set is incoherent");
             }
-            await assertMine(previous);
             await writeIdentity(body.identityNullifier);
           }
         } else {
@@ -399,16 +430,207 @@ export class TeeService {
         }
       }
 
-      await this.syncEligibilityCache(tx, userId, body.tier);
-      // Writes only — the final read happens outside the transaction so a
+      await this.syncEligibilityCache(tx, effectiveUserId, body.tier);
+      // Writes only â€” the final read happens outside the transaction so a
       // slow/cold DB can never surface as "Transaction already closed".
-    }, TX_OPTS);
+      }, TX_OPTS);
+    } catch (e) {
+      // Lost a concurrent double-submit race on the unique nullifier: if the
+      // winner persisted exactly this set, return it (idempotent success);
+      // anything else is a foreign set and stays a 400.
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2002"
+      ) {
+        const mine = await this.prisma.teeIdentity.findUnique({
+          where: { userId: effectiveUserId },
+          include: { bindings: { orderBy: { createdAt: "asc" } } },
+        });
+        if (mine && mine.identityNullifier === body.identityNullifier) {
+          return { view: this.view(mine), userId: effectiveUserId };
+        }
+        throw new BadRequestException("Wallet set belongs to another account");
+      }
+      throw e;
+    }
 
     const persisted = await this.prisma.teeIdentity.findUniqueOrThrow({
-      where: { userId },
+      where: { userId: effectiveUserId },
       include: { bindings: { orderBy: { createdAt: "asc" } } },
     });
-    return this.view(persisted);
+    return { view: this.view(persisted), userId: effectiveUserId };
+  }
+
+  /** Attested verify + parse shared by register / login / identify. */
+  private async verifySigned(
+    signed: SignedRegistration,
+    escrowBlob?: SignedEnvelope,
+    opts?: { establishOnly?: boolean; requireEscrow?: boolean },
+  ): Promise<{
+    body: RegistrationResultBody;
+    kept: RegistrationResultBody["walletNullifiers"];
+    keptIds: string[];
+    addedIds: string[];
+    removed: RegistrationResultBody["walletNullifiers"];
+    removedIds: string[];
+    labels: Map<string, string | null>;
+    isAddition: boolean;
+    isRemoval: boolean;
+    escrowForWrite: string;
+  }> {
+    const { verifier, expectedPolicyVersion } = this.ensureConfigured();
+    if (!signed || typeof signed !== "object" || !signed.body) {
+      throw new BadRequestException("Malformed signed registration");
+    }
+    const establishment = signed.body.previousIdentityNullifier === undefined;
+    if (opts?.establishOnly && !establishment) {
+      throw new BadRequestException("Wallet login must establish a full set");
+    }
+    if (establishment && opts?.requireEscrow !== false && (!escrowBlob || escrowBlob.v !== 1)) {
+      throw new BadRequestException("Malformed escrow blob");
+    }
+    let body: RegistrationResultBody;
+    try {
+      body = await verifier.verifyRegistration(signed, {
+        expectedNonce: signed.body.nonce,
+        expectedPolicyVersion,
+      });
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? `Tee verification failed: ${error.message}` : "Tee verification failed",
+      );
+    }
+    const kept = body.walletNullifiers;
+    const keptIds = kept.map((w) => w.walletNullifier);
+    const addedIds = (body.addedWalletNullifiers ?? []).map((w) => w.walletNullifier);
+    const removed = body.removedWalletNullifiers ?? [];
+    const removedIds = removed.map((w) => w.walletNullifier);
+    if (keptIds.length === 0) throw new BadRequestException("Empty wallet set");
+    const labels = new Map(kept.map((w) => [w.walletNullifier, w.label ?? null]));
+    const isAddition = body.addedWalletNullifiers !== undefined;
+    const isRemoval = removedIds.length > 0;
+    if (isAddition && isRemoval) {
+      throw new BadRequestException("A transition cannot add and remove wallets at once");
+    }
+    if ((isAddition || isRemoval) && (!body.previousIdentityNullifier || !body.nextEscrowBlob)) {
+      throw new BadRequestException("Transition result is missing its previous identity or escrow blob");
+    }
+    // Additions/removals store the enclave-produced blob; establishments store
+    // the client-produced blob.
+    const escrowForWrite = JSON.stringify(body.nextEscrowBlob ?? escrowBlob);
+    return {
+      body,
+      kept,
+      keptIds,
+      addedIds,
+      removed,
+      removedIds,
+      labels,
+      isAddition,
+      isRemoval,
+      escrowForWrite,
+    };
+  }
+
+  /**
+   * Sessionless wallet login through the enclave. The server never sees an
+   * address: it resolves the owner from the attested nullifiers (or creates
+   * the account for a fresh set) and issues a JWT. Same proof as a normal
+   * establish, so tier and escrow persist identically. Single-use is enforced
+   * by atomic claim (not a pre-issued nonce), and the attested creation time
+   * bounds replays.
+   */
+  async registerLogin(
+    signed: SignedRegistration,
+    escrowBlob?: SignedEnvelope,
+  ): Promise<{ token: string }> {
+    if (!signed || typeof signed !== "object" || !signed.body || typeof signed.body.nonce !== "string") {
+      throw new BadRequestException("Malformed signed registration");
+    }
+    // No claim here: register(null, …) claims exactly once below. Claiming
+    // twice would reject every login with "already used" (found the hard way).
+    const { view, userId } = await this.register(null, signed, escrowBlob);
+    void view;
+    return { token: await this.auth.issueToken(userId) };
+  }
+
+  /** Owner lookup (or creation) for a sessionless login set. */
+  private async resolveOrCreateLoginUser(keptIds: string[]): Promise<string> {
+    const rows = await this.prisma.teeWalletBinding.findMany({
+      where: { walletNullifier: { in: keptIds } },
+    });
+    const owners = new Set(rows.map((r) => r.identityNullifier));
+    if (owners.size === 0) {
+      for (let i = 0; i < 5; i++) {
+        try {
+          const user = await this.prisma.user.create({
+            data: { handle: `user_${randomBytes(3).toString("hex")}` },
+          });
+          return user.id;
+        } catch (e) {
+          if (
+            e instanceof Prisma.PrismaClientKnownRequestError &&
+            e.code === "P2002"
+          ) {
+            continue; // handle collision — roll again
+          }
+          throw e;
+        }
+      }
+      throw new BadRequestException("Couldn't create account — try again");
+    }
+    if (owners.size > 1) {
+      throw new BadRequestException("Wallets belong to multiple accounts");
+    }
+    const identity = await this.prisma.teeIdentity.findUnique({
+      where: { identityNullifier: [...owners][0]! },
+    });
+    if (!identity) throw new BadRequestException("Stored wallet set is incoherent");
+    return identity.userId;
+  }
+
+  /**
+   * Sessionless identify for username recovery: which account holds these
+   * wallets? Every kept wallet must resolve to ONE identity (shared wallets
+   * are impossible — bindings are globally unique — so a subset still
+   * identifies its owner). Returns the username plus a single-use recovery
+   * token. Nothing is stored; no addresses are involved at any point.
+   */
+  async identify(
+    signed: SignedRegistration,
+  ): Promise<{ username: string | null; recoveryToken: string }> {
+    if (!signed || typeof signed !== "object" || !signed.body || typeof signed.body.nonce !== "string") {
+      throw new BadRequestException("Malformed signed registration");
+    }
+    await this.claimNonce(signed.body.nonce);
+    const v = await this.verifySigned(signed, undefined, {
+      establishOnly: true,
+      requireEscrow: false,
+    });
+    const rows = await this.prisma.teeWalletBinding.findMany({
+      where: { walletNullifier: { in: v.keptIds } },
+    });
+    if (rows.length !== v.keptIds.length) {
+      throw new NotFoundException("No account found for this wallet set");
+    }
+    const owners = new Set(rows.map((r) => r.identityNullifier));
+    if (owners.size !== 1) {
+      throw new BadRequestException("Wallets belong to multiple accounts");
+    }
+    const identity = await this.prisma.teeIdentity.findUnique({
+      where: { identityNullifier: [...owners][0]! },
+    });
+    if (!identity) throw new NotFoundException("No account found for this wallet set");
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: identity.userId },
+    });
+    const raw = randomBytes(32).toString("base64url");
+    await this.cache.set(
+      `${RECOVERY_TOKEN_PREFIX}${raw}`,
+      { userId: user.id },
+      RECOVERY_TTL_MS,
+    );
+    return { username: user.username, recoveryToken: raw };
   }
 
   private async syncEligibilityCache(

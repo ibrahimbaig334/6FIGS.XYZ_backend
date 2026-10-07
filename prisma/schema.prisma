@@ -23,23 +23,9 @@ model User {
   wallets    Wallet[]
   eligibility EligibilityCache?
   teeIdentity TeeIdentity?
-  recoveryWallets WalletRecovery[]
   sentMessages Message[]       @relation("SentMessages")
   roomMemberships RoomMember[]
   createdRooms Room[]          @relation("CreatedRooms")
-}
-
-// Opt-in wallet recovery mapping. Created only when a user links a wallet
-// for recovery (profile): plain SHA-256 of "chain:address", so anyone who
-// HOLDS the wallet can find the account — never an address in cleartext,
-// and only for users who chose device-free login.
-model WalletRecovery {
-  addressHash String   @id
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
-
-  @@index([userId])
 }
 
 model Wallet {

@@ -17,14 +17,39 @@ export class TeeController {
   /** Submit an attested registration plus its escrow blob. */
   @Post("tee-register")
   @UseGuards(JwtGuard)
-  register(
+  async register(
     @CurrentUser() userId: string,
     @Body() body: { signed?: unknown; escrowBlob?: unknown },
   ) {
-    return this.tee.register(
+    const { view } = await this.tee.register(
       userId,
       body.signed as Parameters<TeeService["register"]>[1],
       body.escrowBlob as Parameters<TeeService["register"]>[2],
+    );
+    return view;
+  }
+
+  /**
+   * Sessionless wallet login through the enclave. The server never sees an
+   * address — the owner is resolved (or created) from attested nullifiers.
+   */
+  @Post("tee-login")
+  login(@Body() body: { signed?: unknown; escrowBlob?: unknown }) {
+    return this.tee.registerLogin(
+      body.signed as Parameters<TeeService["registerLogin"]>[0],
+      body.escrowBlob as Parameters<TeeService["registerLogin"]>[1],
+    );
+  }
+
+  /**
+   * Sessionless identify for username recovery: which account holds these
+   * wallets? Returns the username plus a single-use recovery token. Nothing
+   * is stored; no addresses are involved at any point.
+   */
+  @Post("tee-identify")
+  identify(@Body() body: { signed?: unknown }) {
+    return this.tee.identify(
+      body.signed as Parameters<TeeService["identify"]>[0],
     );
   }
 
