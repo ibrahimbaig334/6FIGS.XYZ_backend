@@ -67,12 +67,14 @@ export class AuthService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  nonceFor(chain: string, address: string): { nonce: string } {
+  nonceFor(chain: string, address: string, purpose = "login"): { nonce: string } {
     if (!CHAINS.includes(chain as Chain))
       throw new BadRequestException("Unsupported chain");
     const normalized = normalizeAddress(chain, address);
     const nonce = randomBytes(16).toString("hex");
-    this.nonces.set(`${chain}:${normalized}`, {
+    // Namespaced per purpose: concurrent login + recovery flows for the same
+    // wallet must never overwrite each other's challenge.
+    this.nonces.set(`${purpose}:${chain}:${normalized}`, {
       chain,
       address: normalized,
       nonce,
@@ -81,8 +83,13 @@ export class AuthService {
     return { nonce };
   }
 
-  private takeNonce(chain: string, normalized: string, nonce: string): void {
-    const key = `${chain}:${normalized}`;
+  private takeNonce(
+    chain: string,
+    normalized: string,
+    nonce: string,
+    purpose = "login",
+  ): void {
+    const key = `${purpose}:${chain}:${normalized}`;
     const entry = this.nonces.get(key);
     this.nonces.delete(key);
     if (!entry || entry.nonce !== nonce || entry.exp < Date.now()) {
@@ -183,11 +190,12 @@ export class AuthService {
     address: string,
     nonce: string,
     signature: string,
+    purpose = "login",
   ): Promise<string> {
     if (!CHAINS.includes(chain as Chain))
       throw new BadRequestException("Unsupported chain");
     const normalized = normalizeAddress(chain, address);
-    this.takeNonce(chain, normalized, nonce);
+    this.takeNonce(chain, normalized, nonce, purpose);
     await this.verifySignature(chain, normalized, nonce, signature);
     return normalized;
   }
@@ -202,8 +210,9 @@ export class AuthService {
     address: string,
     nonce: string,
     signature: string,
+    purpose = "login",
   ): Promise<string> {
-    return this.checkSignature(chain, address, nonce, signature);
+    return this.checkSignature(chain, address, nonce, signature, purpose);
   }
 
   /**

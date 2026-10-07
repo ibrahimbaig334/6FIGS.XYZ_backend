@@ -156,6 +156,7 @@ export class UsernameService {
       address,
       nonce,
       signature,
+      "recovery",
     );
     const hash = addressHash(chain, normalized);
     const existing = await this.prisma.walletRecovery.findUnique({
@@ -184,6 +185,7 @@ export class UsernameService {
       address,
       nonce,
       signature,
+      "recovery",
     );
     const hash = addressHash(chain, normalized);
     await this.throttle(`recover:${hash}`).catch(() => undefined);

@@ -23,10 +23,11 @@ export class WalletController {
   ) {}
 
   @Post("nonce")
-  nonce(@Body() body: { chain?: string; address?: string }) {
+  nonce(@Body() body: { chain?: string; address?: string; purpose?: string }) {
     return this.auth.nonceFor(
       String(body.chain ?? ""),
       String(body.address ?? ""),
+      String(body.purpose ?? "login"),
     );
   }
 
