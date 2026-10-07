@@ -547,8 +547,43 @@ export class TeeService {
     if (!signed || typeof signed !== "object" || !signed.body || typeof signed.body.nonce !== "string") {
       throw new BadRequestException("Malformed signed registration");
     }
-    // No claim here: register(null, …) claims exactly once below. Claiming
-    // twice would reject every login with "already used" (found the hard way).
+    if (signed.body.previousIdentityNullifier !== undefined) {
+      throw new BadRequestException("Wallet login must establish a full set");
+    }
+    // Verify first (attestation + shape) so the subset check below works on
+    // proven facts, not claims. No claim here: register(null, …) claims
+    // exactly once below — claiming twice rejects every login (found out
+    // the hard way).
+    const v = await this.verifySigned(signed, escrowBlob, {});
+    const rows = await this.prisma.teeWalletBinding.findMany({
+      where: { walletNullifier: { in: v.keptIds } },
+    });
+    const owners = new Set(rows.map((r) => r.identityNullifier));
+    if (owners.size > 1) {
+      throw new BadRequestException("Wallets belong to multiple accounts");
+    }
+    if (owners.size === 1) {
+      const identity = await this.prisma.teeIdentity.findUnique({
+        where: { identityNullifier: [...owners][0]! },
+        include: { bindings: true },
+      });
+      // Strict subset of an ACTIVE identity: log in as its owner WITHOUT
+      // touching anything. A login must never narrow the stored set (that
+      // would silently drop the other wallets' enrollment and their tier
+      // share); narrowing is what the detach endpoint and full re-proves
+      // are for.
+      if (identity && identity.tier !== 0) {
+        const storedIds = new Set(identity.bindings.map((b) => b.walletNullifier));
+        const keptSet = new Set(v.keptIds);
+        const isSubset =
+          v.keptIds.length > 0 &&
+          v.keptIds.every((id) => storedIds.has(id)) &&
+          [...storedIds].some((id) => !keptSet.has(id));
+        if (isSubset) {
+          return { token: await this.auth.issueToken(identity.userId) };
+        }
+      }
+    }
     const { view, userId } = await this.register(null, signed, escrowBlob);
     void view;
     return { token: await this.auth.issueToken(userId) };
