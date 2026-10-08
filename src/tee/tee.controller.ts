@@ -61,6 +61,16 @@ export class TeeController {
   }
 
   /**
+   * Disconnect every wallet: wipes the attested verification (identity,
+   * bindings, tier cache). The username sign-in survives. Idempotent.
+   */
+  @Delete("tee-identity")
+  @UseGuards(JwtGuard)
+  resetIdentity(@CurrentUser() userId: string) {
+    return this.tee.resetIdentity(userId);
+  }
+
+  /**
    * Session-authorized wallet removal. No wallet signature: the logged-in
    * session authorizes the backend, which presents the stored escrow blob to
    * the enclave. Denial-only tradeoff, see docs/SECURITY.md in the tee repo.

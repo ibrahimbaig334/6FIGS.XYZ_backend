@@ -19,25 +19,12 @@ model User {
   visMode    String            @default("HIDDEN")
   tags       String[]          @default([])
   isBot      Boolean           @default(false)
-  createdAt  DateTime          @default(now())
-  wallets    Wallet[]
+  createdAt  DateTime  @default(now())
   eligibility EligibilityCache?
   teeIdentity TeeIdentity?
   sentMessages Message[]       @relation("SentMessages")
   roomMemberships RoomMember[]
   createdRooms Room[]          @relation("CreatedRooms")
-}
-
-model Wallet {
-  id          String    @id @default(cuid())
-  userId      String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  chain       String
-  addressHash String    @unique
-  name        String? // wallet app label (e.g. Phantom) captured at connect
-  verifiedAt  DateTime?
-
-  @@index([userId])
 }
 
 model EligibilityCache {

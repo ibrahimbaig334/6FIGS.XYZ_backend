@@ -17,32 +17,10 @@ export class ProfileService {
   ) {}
 
   async me(userId: string) {
-    const [user, wallets] = await Promise.all([
-      this.prisma.user.findUniqueOrThrow({ where: { id: userId } }),
-      this.prisma.wallet.findMany({
-        where: { userId },
-        orderBy: { id: "asc" },
-      }),
-    ]);
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+    });
     const elig = await this.eligibility.me(userId);
-    if ("source" in elig && elig.source === "tee") {
-      return {
-        id: user.id,
-        handle: user.handle,
-        visMode: user.visMode,
-        username: user.username,
-        tags: user.tags,
-        eligibility: elig,
-        wallets: elig.wallets.map((w) => ({
-          id: w.id,
-          chain: w.family,
-          name: w.label,
-          address: null,
-          display: w.label ?? w.family.toUpperCase(),
-        })),
-      };
-    }
-    // No stored address exists, so a wallet row exposes only its label.
     return {
       id: user.id,
       handle: user.handle,
@@ -50,13 +28,18 @@ export class ProfileService {
       username: user.username,
       tags: user.tags,
       eligibility: elig,
-      wallets: wallets.map((w) => ({
-        id: w.id,
-        chain: w.chain,
-        name: w.name,
-        address: null,
-        display: w.name ?? w.chain,
-      })),
+      // Tee bindings only: id, chain family, and display label. No address
+      // exists to return, by construction.
+      wallets:
+        elig.source === "tee"
+          ? elig.wallets.map((w) => ({
+              id: w.id,
+              chain: w.family,
+              name: w.label,
+              address: null,
+              display: w.label ?? w.family.toUpperCase(),
+            }))
+          : [],
     };
   }
 

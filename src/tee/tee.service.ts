@@ -720,11 +720,6 @@ export class TeeService {
     };
   }
 
-  /** Count legacy wallet rows for the no-tier eligibility fallback. */
-  async countWallets(userId: string): Promise<number> {
-    return this.prisma.wallet.count({ where: { userId } });
-  }
-
   /** Read the stored view without triggering a recheck. */
   async storedView(userId: string): Promise<TeeIdentityView | null> {
     const identity = await this.prisma.teeIdentity.findUnique({
@@ -821,6 +816,29 @@ export class TeeService {
     } finally {
       await this.cache.unlock(`tee:recheck:${stored.identityNullifier}`);
     }
+  }
+
+  /**
+   * Disconnect every wallet: wipe the attested verification (identity +
+   * bindings + tier cache). Idempotent — always returns ok. The username
+   * sign-in survives; the user simply becomes unverified and re-proves.
+   */
+  async resetIdentity(userId: string): Promise<{ ok: true }> {
+    const identities = await this.prisma.teeIdentity.findMany({
+      where: { userId },
+      select: { identityNullifier: true },
+    });
+    await this.prisma.$transaction(
+      async (tx) => {
+        for (const { identityNullifier } of identities) {
+          await tx.teeWalletBinding.deleteMany({ where: { identityNullifier } });
+          await tx.teeIdentity.delete({ where: { identityNullifier } });
+        }
+        await tx.eligibilityCache.deleteMany({ where: { userId } });
+      },
+      TX_OPTS,
+    );
+    return { ok: true };
   }
 
   /**
