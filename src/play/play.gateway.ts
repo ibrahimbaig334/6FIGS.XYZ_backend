@@ -14,7 +14,7 @@ import { PresenceService } from "../presence/presence.service";
  * (roomRequest / requestAccepted / requestDeclined / requestCancelled).
  */
 @WebSocketGateway({
-  cors: { origin: process.env.WEB_ORIGIN ?? "http://localhost:3000" },
+  cors: { origin: process.env.WEB_ORIGIN ?? true },
 })
 export class PlayGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
