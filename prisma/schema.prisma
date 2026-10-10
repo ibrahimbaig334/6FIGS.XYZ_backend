@@ -74,6 +74,8 @@ model Room {
   imageUrl       String?
   accessType     String       // "tier" | "invite"
   minTier        String?
+  minToken       String?      // optional holdings gate: symbol must be in the joiner's top assets
+  maxMembers     Int          @default(2)
   inviteCodeHash String?
   createdBy      String
   creator        User         @relation("CreatedRooms", fields: [createdBy], references: [id], onDelete: Cascade)

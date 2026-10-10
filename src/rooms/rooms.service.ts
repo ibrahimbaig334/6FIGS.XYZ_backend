@@ -19,8 +19,11 @@ import {
   ROOM_CAPACITY,
   ROOM_DESC_MAX,
   ROOM_GAME_LOCK_MS,
+  ROOM_MAX_MEMBERS,
+  ROOM_MIN_MEMBERS,
   ROOM_NAME_MAX,
   ROOM_NAME_MIN,
+  ROOM_TOKEN_OPTIONS,
   ROOMS_CACHE_MS,
 } from "../common/constants";
 
@@ -28,10 +31,31 @@ export function inviteHash(code: string): string {
   return createHash("sha256").update(code.trim().toUpperCase()).digest("hex");
 }
 
-/** 1v1-only: every private room holds at most two members. */
-/** 1v1-only: every private room holds at most two members (see ROOM_CAPACITY). */
+/** Rooms hold 2–50 members (see maxMembers); 1v1 rooms also get a board. */
+/** Room size defaults to a 1v1 duel (see ROOM_CAPACITY). */
 
 const VALID_TIERS = ["TIER I", "TIER II", "TIER III", "TIER IV"];
+
+/** Directory size buckets: duo (exactly 2) | small (3–10) | large (11+). */
+function sizeMatches(maxMembers: number, size: string): boolean {
+  if (size === "duo") return maxMembers <= 2;
+  if (size === "small") return maxMembers >= 3 && maxMembers <= 10;
+  if (size === "large") return maxMembers >= 11;
+  return true;
+}
+
+/** Holdings gate: the required symbol must sit in the joiner's disclosed
+ *  top assets (compared uppercase — price sources vary in case). */
+function holdsToken(
+  elig: { tier: string | null } & Partial<{ topAssets: unknown }>,
+  minToken: string | null,
+): boolean {
+  if (!minToken) return true;
+  const assets = Array.isArray(elig.topAssets)
+    ? elig.topAssets.map((s) => String(s).toUpperCase())
+    : [];
+  return assets.includes(minToken.toUpperCase());
+}
 
 /** Cached roster item (presence-free — onlineCount is filled fresh per response). */
 interface RoomListItem {
@@ -41,6 +65,8 @@ interface RoomListItem {
   imageUrl: string | null;
   accessType: string;
   minTier: string | null;
+  minToken: string | null;
+  maxMembers: number;
   memberCount: number;
   createdAt: Date;
   isMember: boolean;
@@ -81,6 +107,8 @@ export class RoomsService {
       q?: string;
       access?: string;
       tier?: string;
+      token?: string;
+      size?: string;
       sort?: string;
       order?: string;
       page?: number;
@@ -93,6 +121,15 @@ export class RoomsService {
         ? query.access
         : undefined;
     const tier = VALID_TIERS.find((t) => t === query.tier);
+    const token =
+      typeof query.token === "string" &&
+      ROOM_TOKEN_OPTIONS.includes(query.token.toUpperCase())
+        ? query.token.toUpperCase()
+        : undefined;
+    const size =
+      query.size === "duo" || query.size === "small" || query.size === "large"
+        ? query.size
+        : undefined;
     const sort =
       query.sort === "mine" || query.sort === "members" || query.sort === "tier"
         ? query.sort
@@ -103,13 +140,13 @@ export class RoomsService {
       LIST_MAX_LIMIT,
     );
     const page = Math.max(query.page ?? 1, 1);
-    const cacheKey = `rooms:list:${userId}:${JSON.stringify({ q, access, tier, sort, order, page, limit })}`;
+    const cacheKey = `rooms:list:${userId}:${JSON.stringify({ q, access, tier, token, size, sort, order, page, limit })}`;
     const hit = await this.cache.get<RoomListOut>(cacheKey);
     const out =
       hit ??
       (await this.buildList(
         userId,
-        { q, access, tier, sort, order, page, limit },
+        { q, access, tier, token, size, sort, order, page, limit },
         cacheKey,
       ));
     return this.withPresence(out);
@@ -132,6 +169,8 @@ export class RoomsService {
       q: string;
       access?: string;
       tier?: string;
+      token?: string;
+      size?: string;
       sort: string;
       order: number;
       page: number;
@@ -160,6 +199,11 @@ export class RoomsService {
       rooms = rooms.filter(
         (r) => r.accessType === "tier" && r.minTier === q.tier,
       );
+    if (q.token)
+      rooms = rooms.filter(
+        (r) => r.minToken !== null && r.minToken.toUpperCase() === q.token,
+      );
+    if (q.size) rooms = rooms.filter((r) => sizeMatches(r.maxMembers, q.size!));
     if (q.q)
       rooms = rooms.filter(
         (r) =>
@@ -202,6 +246,8 @@ export class RoomsService {
         imageUrl: r.imageUrl,
         accessType: r.accessType,
         minTier: r.minTier,
+        minToken: r.minToken,
+        maxMembers: r.maxMembers,
         memberCount: r._count.members,
         createdAt: r.createdAt,
         isMember: mySet.has(r.id),
@@ -227,6 +273,8 @@ export class RoomsService {
       imageUrl?: unknown;
       accessType?: unknown;
       minTier?: unknown;
+      minToken?: unknown;
+      maxMembers?: unknown;
       inviteCode?: unknown;
     },
   ) {
@@ -269,7 +317,22 @@ export class RoomsService {
       );
     }
     let minTier: string | null = null;
+    let minToken: string | null = null;
     let codeHash: string | null = null;
+    const maxMembers =
+      body.maxMembers === undefined ||
+      body.maxMembers === null ||
+      body.maxMembers === ""
+        ? ROOM_CAPACITY
+        : Number(body.maxMembers);
+    if (
+      !Number.isInteger(maxMembers) ||
+      maxMembers < ROOM_MIN_MEMBERS ||
+      maxMembers > ROOM_MAX_MEMBERS
+    )
+      throw new BadRequestException(
+        `Room size must be ${ROOM_MIN_MEMBERS}–${ROOM_MAX_MEMBERS} members`,
+      );
     if (accessType === "tier") {
       if (!VALID_TIERS.includes(String(body.minTier)))
         throw new BadRequestException("minTier must be TIER I, II, III or IV");
@@ -285,7 +348,32 @@ export class RoomsService {
         throw new ForbiddenException(
           `You are ${elig.tier} — you cannot require ${minTier}`,
         );
+      // Optional holdings gate: a disclosed top-asset symbol. The creator
+      // must hold it too — same honesty rule as the tier (checked below
+      // against their own top assets).
+      if (
+        body.minToken !== undefined &&
+        body.minToken !== null &&
+        String(body.minToken).trim() !== ""
+      ) {
+        const want = String(body.minToken).trim().toUpperCase();
+        if (!ROOM_TOKEN_OPTIONS.includes(want))
+          throw new BadRequestException(
+            `minToken must be one of ${ROOM_TOKEN_OPTIONS.join(", ")}`,
+          );
+        if (!holdsToken(elig, want))
+          throw new ForbiddenException(
+            `You need ${want} in your top holdings to require it`,
+          );
+        minToken = want;
+      }
     } else {
+      if (
+        body.minToken !== undefined &&
+        body.minToken !== null &&
+        String(body.minToken).trim() !== ""
+      )
+        throw new BadRequestException("Token gates are for tier rooms only");
       const code = String(body.inviteCode ?? "").trim();
       if (code.length < INVITE_CODE_MIN)
         throw new BadRequestException("Invite code needs 4+ chars");
@@ -298,6 +386,8 @@ export class RoomsService {
         imageUrl: body.imageUrl ? String(body.imageUrl).slice(0, 512) : null,
         accessType,
         minTier,
+        minToken,
+        maxMembers,
         inviteCodeHash: codeHash,
         createdBy: userId,
       },
@@ -315,6 +405,8 @@ export class RoomsService {
       name: room.name,
       accessType: room.accessType,
       minTier: room.minTier,
+      minToken: room.minToken,
+      maxMembers: room.maxMembers,
       inviteCode,
     };
   }
@@ -340,6 +432,10 @@ export class RoomsService {
         throw new ForbiddenException(
           `This room needs ${room.minTier} — you are ${elig.tier}`,
         );
+      if (!holdsToken(elig, room.minToken))
+        throw new ForbiddenException(
+          `This room needs ${room.minToken} in your top holdings`,
+        );
     }
     const [existing, count] = await Promise.all([
       this.prisma.roomMember.findUnique({
@@ -348,8 +444,11 @@ export class RoomsService {
       this.prisma.roomMember.count({ where: { roomId } }),
     ]);
     if (existing) return { ok: true, roomId };
-    if (count >= ROOM_CAPACITY)
-      throw new ForbiddenException("Room is full — private rooms are 1v1");
+    const seats = room.maxMembers ?? ROOM_CAPACITY;
+    if (count >= seats)
+      throw new ForbiddenException(
+        `Room is full (${count}/${seats} seats taken)`,
+      );
     await this.prisma.roomMember.create({ data: { roomId, userId } });
     await this.cache.delPrefix("rooms:list:");
     return { ok: true, roomId };
@@ -406,6 +505,7 @@ export class RoomsService {
   /**
    * The room's 1v1 game: returns the pair's open game, creating a match+game
    * when needed. Requires both seats filled (member-only, needs a peer).
+   * Chat rooms (maxMembers > 2) have no board at all.
    * Guarded by a Redis lock — concurrent calls from both players used to race
    * and create two different games (boards wouldn't sync).
    */
@@ -427,7 +527,7 @@ export class RoomsService {
       // Members who dropped below the room's tier lose access to its game too.
       const room = await this.prisma.room.findUnique({
         where: { id: roomId },
-        select: { accessType: true, minTier: true },
+        select: { accessType: true, minTier: true, maxMembers: true },
       });
       if (room?.accessType === "tier") {
         const elig = await this.eligibility.me(userId);
@@ -438,6 +538,10 @@ export class RoomsService {
               : "Verify your holdings in Profile to enter this room",
           );
       }
+      if ((room?.maxMembers ?? ROOM_CAPACITY) > 2)
+        throw new BadRequestException(
+          "Chat rooms have no board — 1v1 rooms only",
+        );
       if (members.length < 2)
         throw new BadRequestException("Waiting for your 1v1 peer to join");
       const [u1, u2] = [members[0].userId, members[1].userId];
@@ -501,9 +605,12 @@ export class RoomsService {
         joinReason = "Verify your holdings in Profile to enter this room";
       else if (tierRank(elig.tier) < tierRank(room.minTier))
         joinReason = `This room needs ${room.minTier} — you are ${elig.tier}`;
+      else if (!holdsToken(elig, room.minToken))
+        joinReason = `This room needs ${room.minToken} in your top holdings`;
     }
-    if (!joinReason && !isMember && memberCount >= ROOM_CAPACITY)
-      joinReason = "Room is full — private rooms are 1v1";
+    const seats = room.maxMembers ?? ROOM_CAPACITY;
+    if (!joinReason && !isMember && memberCount >= seats)
+      joinReason = `Room is full (${memberCount}/${seats} seats taken)`;
     return {
       id: room.id,
       name: room.name,
@@ -511,6 +618,8 @@ export class RoomsService {
       imageUrl: room.imageUrl,
       accessType: room.accessType,
       minTier: room.minTier,
+      minToken: room.minToken,
+      maxMembers: seats,
       memberCount,
       onlineCount: this.presence.countInRoom(`room:${roomId}`),
       isMember,

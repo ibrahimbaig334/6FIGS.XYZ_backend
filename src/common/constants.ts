@@ -4,8 +4,22 @@
  */
 
 // Rooms
-export const ROOM_CAPACITY = 2; // 1v1 — members per room
+export const ROOM_CAPACITY = 2; // default members per room (1v1)
+export const ROOM_MIN_MEMBERS = 2;
+export const ROOM_MAX_MEMBERS = 50;
 export const MAX_ROOMS_PER_USER = 3; // rooms one user may own
+// Holdings-gate symbols (must match frontend TOKEN_OPTIONS). Compared
+// against the joiner's disclosed top assets (uppercase).
+export const ROOM_TOKEN_OPTIONS = [
+  "BTC",
+  "ETH",
+  "SOL",
+  "USDT",
+  "USDC",
+  "XRP",
+  "DOGE",
+  "HYPE",
+];
 export const ROOM_NAME_MIN = 3;
 export const ROOM_NAME_MAX = 48;
 export const ROOM_DESC_MAX = 160;
