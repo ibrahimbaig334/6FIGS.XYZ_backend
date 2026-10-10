@@ -43,7 +43,10 @@ export class AuthService {
   async validateToken(token: string): Promise<{ userId: string }> {
     let payload: { sub?: unknown; pv?: unknown };
     try {
-      payload = jwt.verify(token, jwtSecret()) as { sub?: unknown; pv?: unknown };
+      payload = jwt.verify(token, jwtSecret()) as {
+        sub?: unknown;
+        pv?: unknown;
+      };
     } catch {
       throw new UnauthorizedException("Invalid session — reconnect wallet");
     }
@@ -55,17 +58,23 @@ export class AuthService {
       select: { id: true, passwordChangedAt: true },
     });
     if (!user) {
-      throw new UnauthorizedException("Account no longer exists — reconnect wallet");
+      throw new UnauthorizedException(
+        "Account no longer exists — reconnect wallet",
+      );
     }
     const current = user.passwordChangedAt?.getTime() ?? 0;
     const tokenVersion = typeof payload.pv === "number" ? payload.pv : 0;
     if (tokenVersion < current) {
-      throw new UnauthorizedException("Session expired after a password change — sign in again");
+      throw new UnauthorizedException(
+        "Session expired after a password change — sign in again",
+      );
     }
     return { userId: user.id };
   }
 
-  async userIdFromHeader(authHeader: string | undefined): Promise<string | null> {
+  async userIdFromHeader(
+    authHeader: string | undefined,
+  ): Promise<string | null> {
     if (!authHeader?.startsWith("Bearer ")) return null;
     try {
       return (await this.validateToken(authHeader.slice(7))).userId;

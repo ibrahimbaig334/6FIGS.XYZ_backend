@@ -58,7 +58,9 @@ export async function verifyPassword(
       { N: Number(n), r: Number(r), p: Number(p) },
     );
     const expected = Buffer.from(derivedHex, "hex");
-    return derived.length === expected.length && timingSafeEqual(derived, expected);
+    return (
+      derived.length === expected.length && timingSafeEqual(derived, expected)
+    );
   } catch {
     return false;
   }

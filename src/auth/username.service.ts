@@ -11,11 +11,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CacheService } from "../common/cache.service";
 import { AuthService } from "./auth.service";
 import { HANDLE_PATTERN } from "../common/constants";
-import {
-  MIN_PASSWORD_LEN,
-  hashPassword,
-  verifyPassword,
-} from "./password";
+import { MIN_PASSWORD_LEN, hashPassword, verifyPassword } from "./password";
 
 // Login/attempt budget per username, windowed. Wrong-password probing
 // against one account is capped without locking the account itself.
@@ -42,9 +38,7 @@ export class UsernameService {
   private checkUsername(username: unknown): string {
     const v = String(username ?? "").trim();
     if (!HANDLE_PATTERN.test(v))
-      throw new BadRequestException(
-        "Username: 3–24 chars, letters/numbers/._",
-      );
+      throw new BadRequestException("Username: 3–24 chars, letters/numbers/._");
     return v;
   }
 
@@ -139,11 +133,7 @@ export class UsernameService {
   /** Step 2: consume the token — rename and/or set a new password (which
    *  kills all old sessions), or neither to simply sign in. Tokens are
    *  minted by tee-identify: any enrolled wallet recovers, no pre-linking. */
-  async reset(
-    token: string,
-    username?: string,
-    password?: string,
-  ) {
+  async reset(token: string, username?: string, password?: string) {
     const raw = String(token ?? "");
     const entry = await this.cache.get<{ userId: string }>(
       `${RECOVERY_TOKEN_PREFIX}${raw}`,

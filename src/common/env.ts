@@ -18,12 +18,7 @@ export function requiredEnv(name: string): string {
   return v;
 }
 
-const REQUIRED = [
-  "DATABASE_URL",
-  "JWT_SECRET",
-  "REDIS_URL",
-  "CHAIN_MODE",
-];
+const REQUIRED = ["DATABASE_URL", "JWT_SECRET", "REDIS_URL", "CHAIN_MODE"];
 
 export function assertEnv(): void {
   const missing = REQUIRED.filter((k) => !(process.env[k] ?? "").trim());

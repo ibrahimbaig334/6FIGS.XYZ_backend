@@ -1,4 +1,11 @@
-import { Body, Controller, Delete, Param, Post, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Delete,
+  Param,
+  Post,
+  UseGuards,
+} from "@nestjs/common";
 import { CurrentUser } from "../auth/current-user";
 import { JwtGuard } from "../auth/jwt.guard";
 import { TeeService } from "./tee.service";
@@ -77,7 +84,10 @@ export class TeeController {
    */
   @Delete("tee-wallet/:walletId")
   @UseGuards(JwtGuard)
-  removeWallet(@CurrentUser() userId: string, @Param("walletId") walletId: string) {
+  removeWallet(
+    @CurrentUser() userId: string,
+    @Param("walletId") walletId: string,
+  ) {
     return this.tee.removeWallet(userId, walletId);
   }
 }

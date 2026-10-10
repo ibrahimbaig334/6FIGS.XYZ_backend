@@ -15,9 +15,15 @@
     // subpaths straight at the compiled entry typings. Runtime uses Node's
     // own exports resolution (Node >= 22 require()s the tee ESM dist fine).
     "paths": {
-      "@sixfigs/tee/client": ["./node_modules/@sixfigs/tee/dist/client/index.d.ts"],
-      "@sixfigs/tee/verifier": ["./node_modules/@sixfigs/tee/dist/verifier/index.d.ts"],
-      "@sixfigs/tee/shared": ["./node_modules/@sixfigs/tee/dist/shared/index.d.ts"]
+      "@sixfigs/tee/client": [
+        "./node_modules/@sixfigs/tee/dist/client/index.d.ts"
+      ],
+      "@sixfigs/tee/verifier": [
+        "./node_modules/@sixfigs/tee/dist/verifier/index.d.ts"
+      ],
+      "@sixfigs/tee/shared": [
+        "./node_modules/@sixfigs/tee/dist/shared/index.d.ts"
+      ]
     },
     "incremental": true,
     "skipLibCheck": true,
