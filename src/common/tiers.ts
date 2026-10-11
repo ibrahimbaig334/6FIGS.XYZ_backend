@@ -11,9 +11,9 @@ export function isDevnet(): boolean {
 
 export function tierThresholds(): Record<Tier, number> {
   if (isDevnet())
-    return { "TIER I": 10, "TIER II": 100, "TIER III": 500, "TIER IV": 1_000 };
+    return { "TIER I": 0, "TIER II": 100, "TIER III": 500, "TIER IV": 1_000 };
   return {
-    "TIER I": 100_000,
+    "TIER I": 0,
     "TIER II": 300_000,
     "TIER III": 500_000,
     "TIER IV": 1_000_000,

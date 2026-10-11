@@ -10,6 +10,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import { PresenceService } from "../presence/presence.service";
 import { CacheService } from "../common/cache.service";
 import {
+  BOT_HANDLE,
+  BOT_WAIT_MS,
   FRESH_MATCH_MS,
   LIST_DEFAULT_LIMIT,
   LIST_MAX_LIMIT,
@@ -31,7 +33,7 @@ export class PlayService {
       where: { userId },
     });
     if (!cache || cache.expiresAt <= new Date()) {
-      throw new ForbiddenException("Verify ≥ $100K in Profile first");
+      throw new ForbiddenException("Verify your holdings in Profile first");
     }
   }
 
@@ -154,7 +156,13 @@ export class PlayService {
         where: { userId: { not: selfId } },
         orderBy: { createdAt: "asc" },
       });
-      if (!waiter) return null;
+      if (!waiter) {
+        // Nobody to pair with: past the house patience, seat the bot.
+        if (Date.now() - me.createdAt.getTime() >= BOT_WAIT_MS) {
+          return this.matchBot(selfId);
+        }
+        return null;
+      }
       const cache = await this.prisma.eligibilityCache.findUnique({
         where: { userId: waiter.userId },
       });
@@ -188,11 +196,57 @@ export class PlayService {
     }
   }
 
-  /** Latest open random match involving self (for the waiter after being paired). */
+  /** The house bot account (created lazily, shared by all bot tables). */
+  private async ensureBot() {
+    const existing = await this.prisma.user.findFirst({
+      where: { isBot: true },
+    });
+    if (existing) return existing;
+    try {
+      return await this.prisma.user.create({
+        data: { handle: BOT_HANDLE, visMode: "HIDDEN", tags: [], isBot: true },
+      });
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2002"
+      ) {
+        const retry = await this.prisma.user.findFirst({
+          where: { isBot: true },
+        });
+        if (retry) return retry;
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Seat the house bot with a waiter past its patience. Runs inside the
+   * queue-match lock: human moves first (X), the bot answers inside
+   * game.move. Same shape as a human pairing, so no client changes apply.
+   */
+  private async matchBot(selfId: string) {
+    const bot = await this.ensureBot();
+    await this.prisma.queueTicket.deleteMany({ where: { userId: selfId } });
+    const match = await this.prisma.match.create({
+      data: { aUserId: selfId, bUserId: bot.id, origin: "bot" },
+    });
+    const game = await this.prisma.game.create({
+      data: { matchId: match.id },
+    });
+    return {
+      matchId: match.id,
+      gameId: game.id,
+      youAre: "X",
+      opponent: this.pubUser(bot, null),
+    };
+  }
+
+  /** Latest open random (or house) match involving self (for the waiter after being paired). */
   private async findFreshRandomMatch(selfId: string) {
     const m = await this.prisma.match.findFirst({
       where: {
-        origin: "random",
+        origin: { in: ["random", "bot"] },
         createdAt: { gt: new Date(Date.now() - FRESH_MATCH_MS) },
         OR: [{ aUserId: selfId }, { bUserId: selfId }],
       },

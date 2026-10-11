@@ -26,6 +26,34 @@ function checkWinner(board: string): string | null {
   return null;
 }
 
+/** House bot: complete its own line, block yours, take center, else random. */
+function botPick(board: string, mark: string): number {
+  const cells = board.split("");
+  const empties = cells
+    .map((c, i) => (c === "." ? i : -1))
+    .filter((i) => i >= 0);
+  if (empties.length === 0) return -1;
+  const complete = (m: string): number => {
+    for (const [a, b, c] of LINES) {
+      const line = [cells[a], cells[b], cells[c]];
+      if (
+        line.filter((x) => x === m).length === 2 &&
+        line.includes(".")
+      ) {
+        const at = [a, b, c].find((i) => cells[i] === ".");
+        if (at !== undefined) return at;
+      }
+    }
+    return -1;
+  };
+  const win = complete(mark);
+  if (win >= 0) return win;
+  const block = complete(mark === "X" ? "O" : "X");
+  if (block >= 0) return block;
+  if (cells[4] === ".") return 4;
+  return empties[Math.floor(Math.random() * empties.length)];
+}
+
 @Injectable()
 export class GameService {
   constructor(
@@ -96,6 +124,13 @@ export class GameService {
     const game = await this.load(gameId, userId);
     const oppId =
       game.match.aUserId === userId ? game.match.bUserId : game.match.aUserId;
+    // House bot has no socket: it is always "here", so presence-gated UI
+    // (waiting text, board locks, return countdowns) never trips on it.
+    const opp = await this.prisma.user.findUnique({
+      where: { id: oppId },
+      select: { isBot: true },
+    });
+    if (opp?.isBot) return { oppOnline: true, oppHere: true, oppInGame: true };
     return {
       oppOnline: this.presence.status(oppId).online,
       oppHere: this.presence.isInRoom(oppId, `dm:${game.matchId}`),
@@ -123,12 +158,44 @@ export class GameService {
       game.board.slice(0, index) + mark + game.board.slice(index + 1);
     const winner = checkWinner(board);
     const status = winner ? "done" : board.includes(".") ? "open" : "draw";
-    const updated = await this.prisma.game.update({
+    let final = await this.prisma.game.update({
       where: { id: gameId },
       data: { board, winner, status, turn: mark === "X" ? "O" : "X" },
       include: { match: true },
     });
-    return { ...this.shape(updated, userId), board, winner, status };
+    // House bot answers instantly in the same request: no polling, no
+    // presence needed. Win if it can, block if it must, else a random seat.
+    const oppId =
+      final.match.aUserId === userId ? final.match.bUserId : final.match.aUserId;
+    const opp = await this.prisma.user.findUnique({
+      where: { id: oppId },
+      select: { isBot: true },
+    });
+    if (opp?.isBot && final.status === "open") {
+      const botMark = final.turn;
+      const at = botPick(final.board, botMark);
+      if (at >= 0) {
+        const b2 =
+          final.board.slice(0, at) + botMark + final.board.slice(at + 1);
+        const w2 = checkWinner(b2);
+        final = await this.prisma.game.update({
+          where: { id: gameId },
+          data: {
+            board: b2,
+            winner: w2,
+            status: w2 ? "done" : b2.includes(".") ? "open" : "draw",
+            turn: botMark === "X" ? "O" : "X",
+          },
+          include: { match: true },
+        });
+      }
+    }
+    return {
+      ...this.shape(final, userId),
+      board: final.board,
+      winner: final.winner,
+      status: final.status,
+    };
   }
 
   async rematch(gameId: string, userId: string) {
