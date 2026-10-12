@@ -239,7 +239,7 @@ export class TokensService {
       const step = Math.max(1, Math.floor(valid.length / 40));
       const candles = valid
         .filter((_, i) => i % step === 0)
-        .map(([t, o, h, l, c], i) => ({ t: i, o, h, l, c }));
+        .map(([, o, h, l, c], i) => ({ t: i, o, h, l, c }));
       // Wicks (thin ink range) + bodies (thick green/red range) as two
       // datasets with grouped:false, so each pair overlaps centered.
       // Explicit y bounds: flat data (stables) would otherwise give the

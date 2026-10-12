@@ -33,7 +33,7 @@ export class PlayService {
       where: { userId },
     });
     if (!cache || cache.expiresAt <= new Date()) {
-      throw new ForbiddenException("Verify your holdings in Profile first");
+      throw new ForbiddenException("Verify your wallets in Profile first");
     }
   }
 

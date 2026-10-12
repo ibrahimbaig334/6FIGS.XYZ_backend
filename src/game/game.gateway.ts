@@ -21,7 +21,7 @@ interface RematchOffer {
 }
 
 @WebSocketGateway({
-  cors: { origin: process.env.WEB_ORIGIN ?? "http://localhost:3000" },
+  cors: { origin: process.env.WEB_ORIGIN ?? true },
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;

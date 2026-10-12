@@ -13,7 +13,7 @@ import { ChatService } from "./chat.service";
 import { PresenceService } from "../presence/presence.service";
 
 @WebSocketGateway({
-  cors: { origin: process.env.WEB_ORIGIN ?? "http://localhost:3000" },
+  cors: { origin: process.env.WEB_ORIGIN ?? true },
 })
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
