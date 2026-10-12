@@ -274,7 +274,6 @@ export class TeeService {
       kept,
       keptIds,
       addedIds,
-      removed,
       removedIds,
       labels,
       isAddition,
