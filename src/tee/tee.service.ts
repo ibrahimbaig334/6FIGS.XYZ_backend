@@ -47,7 +47,7 @@ export interface TeeWalletView {
 
 export interface TeeIdentityView {
   source: "tee";
-  /** Product label ("TIER I".."TIER IV") or null when unverified. */
+  /** Product label ("TIER 0".."TIER IV") or null when unverified. */
   tier: string | null;
   tierId: number;
   portfolioBand: string;
@@ -213,6 +213,9 @@ export class TeeService {
   }
 
   private tierLabel(tierId: number): string {
+    // The installed @sixfigs/tee may predate TIER 0 (productTierLabel(0) === null
+    // there); handle 0 explicitly so tier-0 proofs label correctly either way.
+    if (tierId === 0) return "TIER 0";
     const label = productTierLabel(tierId);
     return label ? `TIER ${label}` : "NONE";
   }
@@ -247,7 +250,6 @@ export class TeeService {
       kept,
       keptIds,
       addedIds,
-      removed,
       removedIds,
       labels,
       isAddition,
@@ -414,9 +416,10 @@ export class TeeService {
             if (previousRows.some((e) => !keptSet.has(e.walletNullifier))) {
               throw new BadRequestException("Transition drops a wallet without consent");
             }
-            // A tier zeroed by disconnects may be re-established over any
-            // subset of its remaining wallets; otherwise the stored set
-            // must match exactly.
+            // A legacy account zeroed by the old disconnect flow may have
+            // bindings that no longer match its identity; it can re-establish
+            // over its remaining wallets. Coherent stored sets (including the
+            // admitted TIER 0) never hit this branch. Otherwise exact match.
             if (
               walletSetNullifier(previousRows) !== previous &&
               !(mine && mine.tier === 0)
@@ -567,12 +570,12 @@ export class TeeService {
         where: { identityNullifier: [...owners][0]! },
         include: { bindings: true },
       });
-      // Strict subset of an ACTIVE identity: log in as its owner WITHOUT
+      // Strict subset of a stored identity: log in as its owner WITHOUT
       // touching anything. A login must never narrow the stored set (that
       // would silently drop the other wallets' enrollment and their tier
       // share); narrowing is what the detach endpoint and full re-proves
-      // are for.
-      if (identity && identity.tier !== 0) {
+      // are for. Applies to every tier including TIER 0.
+      if (identity) {
         const storedIds = new Set(identity.bindings.map((b) => b.walletNullifier));
         const keptSet = new Set(v.keptIds);
         const isSubset =
@@ -678,15 +681,13 @@ export class TeeService {
     userId: string,
     tierId: number,
   ): Promise<void> {
-    if (tierId > 0) {
-      await tx.eligibilityCache.upsert({
-        where: { userId },
-        create: { userId, tier: this.tierLabel(tierId), expiresAt: new Date(Date.now() + 24 * 3_600_000) },
-        update: { tier: this.tierLabel(tierId), verifiedAt: new Date(), expiresAt: new Date(Date.now() + 24 * 3_600_000) },
-      });
-    } else {
-      await tx.eligibilityCache.deleteMany({ where: { userId } });
-    }
+    // Every verified tier — including TIER 0 — gets a cache row so the holder
+    // can use the app. Only a wiped identity deletes the row.
+    await tx.eligibilityCache.upsert({
+      where: { userId },
+      create: { userId, tier: this.tierLabel(tierId), expiresAt: new Date(Date.now() + 24 * 3_600_000) },
+      update: { tier: this.tierLabel(tierId), verifiedAt: new Date(), expiresAt: new Date(Date.now() + 24 * 3_600_000) },
+    });
   }
 
   /** Stored view with no balance computation. */
@@ -707,7 +708,7 @@ export class TeeService {
     const stale = now - verifiedAt > this.recheckTtlMs();
     return {
       source: "tee",
-      tier: verified && identity.tier > 0 ? identity.tierLabel : null,
+      tier: verified ? identity.tierLabel : null,
       tierId: identity.tier,
       portfolioBand: identity.portfolioBand,
       topAssets: Array.isArray(identity.topAssets) ? (identity.topAssets as string[]) : [],

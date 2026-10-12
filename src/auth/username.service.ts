@@ -6,7 +6,6 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { randomBytes } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { CacheService } from "../common/cache.service";
 import { AuthService } from "./auth.service";

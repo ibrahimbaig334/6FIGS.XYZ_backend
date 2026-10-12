@@ -31,7 +31,7 @@ export function inviteHash(code: string): string {
 /** 1v1-only: every private room holds at most two members. */
 /** 1v1-only: every private room holds at most two members (see ROOM_CAPACITY). */
 
-const VALID_TIERS = ["TIER I", "TIER II", "TIER III", "TIER IV"];
+const VALID_TIERS = ["TIER 0", "TIER I", "TIER II", "TIER III", "TIER IV"];
 
 /** Cached roster item (presence-free — onlineCount is filled fresh per response). */
 interface RoomListItem {
@@ -69,7 +69,7 @@ export class RoomsService {
    * Room directory with search, filters, sorting and pagination.
    * sort: created | members | mine (only rooms I'm in, newest first) | tier
    * (by min-tier rank). tier= filters tier-rooms to one min-tier
-   * (TIER I/II/III — invite rooms have no tier, so the frontend hides the tier
+   * (TIER 0/I/II/III — invite rooms have no tier, so the frontend hides the tier
    * options under the invite-only filter). Redis caches the ROSTER
    * for 15s per user+param combo; the live presence count is filled fresh on
    * EVERY response from socket occupancy (never cached) — closing a tab drops
@@ -272,7 +272,7 @@ export class RoomsService {
     let codeHash: string | null = null;
     if (accessType === "tier") {
       if (!VALID_TIERS.includes(String(body.minTier)))
-        throw new BadRequestException("minTier must be TIER I, II, III or IV");
+        throw new BadRequestException("minTier must be TIER 0, I, II, III or IV");
       minTier = String(body.minTier);
       // A room can never demand more than the creator currently holds — hides
       // the higher-tier options in the UI and blocks forged requests here.
