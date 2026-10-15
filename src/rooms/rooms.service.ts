@@ -335,7 +335,9 @@ export class RoomsService {
       );
     if (accessType === "tier") {
       if (!VALID_TIERS.includes(String(body.minTier)))
-        throw new BadRequestException("minTier must be TIER 0, I, II, III or IV");
+        throw new BadRequestException(
+          "minTier must be TIER 0, I, II, III or IV",
+        );
       minTier = String(body.minTier);
       // A room can never demand more than the creator currently holds — hides
       // the higher-tier options in the UI and blocks forged requests here.

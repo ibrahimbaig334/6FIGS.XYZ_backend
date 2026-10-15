@@ -36,10 +36,7 @@ function botPick(board: string, mark: string): number {
   const complete = (m: string): number => {
     for (const [a, b, c] of LINES) {
       const line = [cells[a], cells[b], cells[c]];
-      if (
-        line.filter((x) => x === m).length === 2 &&
-        line.includes(".")
-      ) {
+      if (line.filter((x) => x === m).length === 2 && line.includes(".")) {
         const at = [a, b, c].find((i) => cells[i] === ".");
         if (at !== undefined) return at;
       }
@@ -53,6 +50,14 @@ function botPick(board: string, mark: string): number {
   if (cells[4] === ".") return 4;
   return empties[Math.floor(Math.random() * empties.length)];
 }
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// Human-like pause before the house bot answers (ms, randomized per move).
+const BOT_MOVE_DELAY_MIN_MS = 800;
+const BOT_MOVE_DELAY_MAX_MS = 1600;
 
 @Injectable()
 export class GameService {
@@ -163,15 +168,22 @@ export class GameService {
       data: { board, winner, status, turn: mark === "X" ? "O" : "X" },
       include: { match: true },
     });
-    // House bot answers instantly in the same request: no polling, no
-    // presence needed. Win if it can, block if it must, else a random seat.
+    // House bot answers after a short human-like pause in the same
+    // request: no polling, no presence needed. Win if it can, block if it
+    // must, else a random seat.
     const oppId =
-      final.match.aUserId === userId ? final.match.bUserId : final.match.aUserId;
+      final.match.aUserId === userId
+        ? final.match.bUserId
+        : final.match.aUserId;
     const opp = await this.prisma.user.findUnique({
       where: { id: oppId },
       select: { isBot: true },
     });
     if (opp?.isBot && final.status === "open") {
+      const delay =
+        BOT_MOVE_DELAY_MIN_MS +
+        Math.random() * (BOT_MOVE_DELAY_MAX_MS - BOT_MOVE_DELAY_MIN_MS);
+      await sleep(delay);
       const botMark = final.turn;
       const at = botPick(final.board, botMark);
       if (at >= 0) {
@@ -233,6 +245,8 @@ export class GameService {
    * Validate a rematch OFFER (the reset itself happens only on accept):
    * finished games only, opponent must be ON the game page to get the toast
    * (globally online but elsewhere is NOT enough).
+   * House-bot games reset INSTANTLY (the bot has no socket to accept) —
+   * returns { instant: true, state } so the gateway can broadcast directly.
    */
   async offerRematch(gameId: string, userId: string) {
     const game = await this.load(gameId, userId);
@@ -242,8 +256,6 @@ export class GameService {
       throw new BadRequestException("This game was closed");
     const oppId =
       game.match.aUserId === userId ? game.match.bUserId : game.match.aUserId;
-    if (!this.presence.isInRoom(oppId, `game:${gameId}`))
-      throw new BadRequestException("Opponent left the game");
     const [me, opp] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: userId },
@@ -251,9 +263,26 @@ export class GameService {
       }),
       this.prisma.user.findUnique({
         where: { id: oppId },
-        select: { id: true, handle: true },
+        select: { id: true, handle: true, isBot: true },
       }),
     ]);
+    if (opp?.isBot) {
+      const updated = await this.prisma.game.update({
+        where: { id: gameId },
+        data: { board: ".........", turn: "X", status: "open", winner: null },
+        include: { match: true },
+      });
+      return {
+        toUserId: oppId,
+        fromUserId: userId,
+        fromHandle: me?.handle ?? `user_${userId.slice(-4)}`,
+        toHandle: opp?.handle ?? `user_${oppId.slice(-4)}`,
+        instant: true as const,
+        state: this.shape(updated, userId),
+      };
+    }
+    if (!this.presence.isInRoom(oppId, `game:${gameId}`))
+      throw new BadRequestException("Opponent left the game");
     return {
       toUserId: oppId,
       fromUserId: userId,

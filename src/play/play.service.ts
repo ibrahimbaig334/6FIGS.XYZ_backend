@@ -131,6 +131,26 @@ export class PlayService {
     return { ok: true };
   }
 
+  /**
+   * Manual "play the house bot now" from the matchmaking veil. Same pairing
+   * as the automatic BOT_WAIT_MS fallback, but immediate — the waiter skips
+   * the rest of the 30s timeout. Runs under the queue-match lock so it can
+   * never double-match with a concurrent tryMatch.
+   */
+  async queueBot(selfId: string) {
+    await this.requireTier(selfId);
+    const locked = await this.cache.lock(
+      "lock:queue-match",
+      QUEUE_LOCK_MS,
+      LOCK_WAIT_MS,
+    );
+    try {
+      return this.matchBot(selfId);
+    } finally {
+      if (locked) await this.cache.unlock("lock:queue-match");
+    }
+  }
+
   /** Pair self with the oldest waiting peer (Redis-locked — no double matches). */
   private async tryMatch(selfId: string) {
     const locked = await this.cache.lock(

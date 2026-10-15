@@ -36,6 +36,12 @@ export class PlayController {
     return this.play.queue(userId);
   }
 
+  /** Manual bot match: skip the 30s random wait and seat HouseBot now. */
+  @Post("queue/bot")
+  queueBot(@CurrentUser() userId: string) {
+    return this.play.queueBot(userId);
+  }
+
   @Get("queue/status")
   queueStatus(@CurrentUser() userId: string) {
     return this.play.queueStatus(userId);

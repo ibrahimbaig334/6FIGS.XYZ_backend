@@ -11,6 +11,7 @@ import { Server, Socket } from "socket.io";
 import { AuthService } from "../auth/auth.service";
 import { GameService } from "./game.service";
 import { PresenceService } from "../presence/presence.service";
+import { corsOrigin } from "../common/cors";
 import { REMATCH_OFFER_MS } from "../common/constants";
 
 interface RematchOffer {
@@ -21,7 +22,7 @@ interface RematchOffer {
 }
 
 @WebSocketGateway({
-  cors: { origin: process.env.WEB_ORIGIN ?? true },
+  cors: { origin: corsOrigin() },
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
@@ -129,6 +130,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const userId = socket.data.userId as string;
       const offer = await this.games.offerRematch(body.gameId, userId);
+      // House-bot rematch: board already reset — broadcast + ack with state,
+      // no toast/timeout (the bot has no socket to accept).
+      if ("instant" in offer && offer.instant) {
+        this.server.to(`game:${body.gameId}`).emit("gameState", offer.state);
+        return { ok: true, toHandle: offer.toHandle, state: offer.state };
+      }
       this.dropOffer(body.gameId); // one live offer per game — newest wins
       const timer = setTimeout(() => {
         this.offers.delete(body.gameId as string);

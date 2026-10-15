@@ -18,9 +18,9 @@ export interface TokenCardData {
   mcap?: number | null;
   vol24h?: number | null;
   change24h?: number | null;
-  /** QuickChart 7d candle PNG (test feature — zero infra, rendered from URL). */
-  chartUrl?: string | null;
   // NOTE: no holders field — CoinGecko free API exposes no holder counts.
+  // NOTE: no chartUrl — charts render as a full TradingView widget on the
+  // client (outside the chatbox), not as server-rendered PNGs.
 }
 
 const SYMBOL_TO_ID: Record<string, string> = {
@@ -61,8 +61,9 @@ const SYMBOL_TO_ID: Record<string, string> = {
  * CoinGecko market-data provider.
  * Rate-limit strategy: every symbol is cached (Redis L1 + Postgres L2) for
  * 5 minutes, so repeated $TICKER mentions — and balance-to-USD conversions —
- * never hit the API more than twice per symbol per 5 min (card + 7d chart,
- * fetched together). On 429/failure the last stored row is served as `stale`.
+ * never hit the API more than once per symbol per 5 min. On 429/failure the
+ * last stored row is served as `stale`. Charts render client-side via
+ * TradingView (no server chart fetching).
  */
 @Injectable()
 export class TokensService {
@@ -151,20 +152,15 @@ export class TokensService {
   async fetchCard(sym: string): Promise<TokenCardData | null> {
     const id = await this.resolveId(sym);
     if (!id) return { status: "unknown", name: sym };
-    // Markets + 7d chart in parallel (chart never blocks the card); one
-    // retry on 429 since a fresh symbol costs 2 calls in one burst.
-    const [markets, chartUrl] = await Promise.all([
-      this.fetchMarkets(id, sym),
-      this.fetchChart(id, true),
-    ]);
+    const markets = await this.fetchMarkets(id, sym);
     if (!markets) return null;
-    return { status: "live", ...markets, chartUrl };
+    return { status: "live", ...markets };
   }
 
   private async fetchMarkets(
     id: string,
     sym: string,
-  ): Promise<Omit<TokenCardData, "chartUrl" | "status"> | null> {
+  ): Promise<Omit<TokenCardData, "status"> | null> {
     try {
       const res = await fetch(
         `${COINGECKO_API}/coins/markets?vs_currency=usd&ids=${encodeURIComponent(id)}&price_change_percentage=24h`,
@@ -196,101 +192,6 @@ export class TokensService {
     } catch (err) {
       this.log.warn(
         `CoinGecko fetch failed for $${sym}: ${err instanceof Error ? err.message : err}`,
-      );
-      return null;
-    }
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((r) => setTimeout(r, ms));
-  }
-
-  /**
-   * 7-day candles as a QuickChart PNG URL (test feature). Candlesticks need
-   * Chart.js v3 (`&version=3`); OHLC comes from CoinGecko's ohlc endpoint.
-   * Best-effort: any failure returns null and the card renders without art.
-   * Same 5-min cache as the card (built once per fetchCard).
-   */
-  private async fetchChart(id: string, retry = false): Promise<string | null> {
-    try {
-      const res = await fetch(
-        `${COINGECKO_API}/coins/${encodeURIComponent(id)}/ohlc?vs_currency=usd&days=7`,
-        { headers: this.headers() },
-      );
-      if (res.status === 429 && !retry) {
-        await this.sleep(1200);
-        return this.fetchChart(id, true);
-      }
-      if (!res.ok) return null;
-      const rows = (await res.json()) as [
-        number,
-        number,
-        number,
-        number,
-        number,
-      ][];
-      const valid = (Array.isArray(rows) ? rows : []).filter(
-        (r) =>
-          Array.isArray(r) &&
-          r.length >= 5 &&
-          r.slice(1, 5).every((n) => Number.isFinite(n)),
-      );
-      if (valid.length < 2) return null;
-      const step = Math.max(1, Math.floor(valid.length / 40));
-      const candles = valid
-        .filter((_, i) => i % step === 0)
-        .map(([, o, h, l, c], i) => ({ t: i, o, h, l, c }));
-      // Wicks (thin ink range) + bodies (thick green/red range) as two
-      // datasets with grouped:false, so each pair overlaps centered.
-      // Explicit y bounds: flat data (stables) would otherwise give the
-      // scale a zero range and render an error tile.
-      const wicks = candles.map((k) => [k.l, k.h]);
-      const bodies = candles.map((k) => [
-        Math.min(k.o, k.c),
-        Math.max(k.o, k.c),
-      ]);
-      const ups = candles.map((k) => k.c >= k.o);
-      let lo = Math.min(...candles.map((k) => k.l));
-      let hi = Math.max(...candles.map((k) => k.h));
-      if (!(hi > lo)) {
-        lo *= 0.99;
-        hi *= 1.01;
-      }
-      const pad = (hi - lo) * 0.04;
-      const cfg = {
-        type: "bar",
-        data: {
-          labels: candles.map((_, i) => i),
-          datasets: [
-            {
-              data: wicks,
-              backgroundColor: "#121212",
-              barThickness: 3,
-              categoryPercentage: 1.0,
-              grouped: false,
-            },
-            {
-              data: bodies,
-              backgroundColor: ups.map((u) => (u ? "#1a7f37" : "#ed3d2b")),
-              barThickness: 10,
-              categoryPercentage: 1.0,
-              grouped: false,
-            },
-          ],
-        },
-        options: {
-          plugins: { legend: { display: false } },
-          scales: {
-            x: { display: false },
-            y: { display: false, min: lo - pad, max: hi + pad },
-          },
-          animation: false,
-        },
-      };
-      return `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(cfg))}&backgroundColor=transparent&width=600&height=220&version=3`;
-    } catch (err) {
-      this.log.warn(
-        `CoinGecko chart fetch failed for ${id}: ${err instanceof Error ? err.message : err}`,
       );
       return null;
     }

@@ -7,6 +7,7 @@ import {
 import { Server, Socket } from "socket.io";
 import { AuthService } from "../auth/auth.service";
 import { PresenceService } from "../presence/presence.service";
+import { corsOrigin } from "../common/cors";
 
 /**
  * Play gateway: authenticates sockets, tracks presence and hosts per-user
@@ -14,7 +15,7 @@ import { PresenceService } from "../presence/presence.service";
  * (roomRequest / requestAccepted / requestDeclined / requestCancelled).
  */
 @WebSocketGateway({
-  cors: { origin: process.env.WEB_ORIGIN ?? true },
+  cors: { origin: corsOrigin() },
 })
 export class PlayGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
